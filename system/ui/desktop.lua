@@ -40,7 +40,8 @@ local function readCatalog(catalog)
         if type(entry) ~= "table" or type(entry.id) ~= "string" then
             error("Invalid v1.4 application catalog entry", 0)
         end
-        local module = loadModule("/.hccos/system/apps/"..entry.id..".lua")
+        local moduleId = entry.module or entry.id
+        local module = loadModule("/.hccos/system/apps/"..moduleId..".lua")
         modules[entry.id] = module
         ordered[#ordered+1] = {id=entry.id, name=entry.name or module.name or entry.id,
             source=entry.source or "module", module=module}
