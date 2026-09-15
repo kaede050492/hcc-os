@@ -78,7 +78,10 @@ local function fetch(url)
     if type(url) ~= "string" or not url:match("^https://[^%s]+$") then
         return nil, "unsafe HTTPS URL"
     end
-    local handle, err = http.get(url)
+    local requestOk, handle, err = pcall(http.get, url)
+    if not requestOk then
+        return nil, "HTTP failed: "..url..": "..tostring(handle)
+    end
     if not handle then return nil, "HTTP failed: "..url..": "..tostring(err) end
     local readOk, body = pcall(handle.readAll)
     local code = 200
@@ -95,14 +98,51 @@ local function fetch(url)
 end
 
 local function parseManifest(source)
-    -- The manifest is evaluated in an empty environment; it is data only.
-    local chunk, err = load(source, "@remote manifest.lua", "t", {})
-    if not chunk then return nil, err end
-    local ok, value = pcall(chunk)
-    if not ok or type(value) ~= "table" then return nil, "manifest is invalid" end
-    if type(value.version) ~= "string" or value.version == "" then return nil, "manifest version is missing" end
-    if type(value.files) ~= "table" then return nil, "manifest files list is missing" end
-    return value
+    if type(source) ~= "string" then return nil, "manifest body is not text" end
+    source = source:gsub("^\239\187\191", "")
+
+    -- Support the normal Lua form (`return { ... }`) and a serialized table.
+    -- Keep the manifest evaluation data-only and compatible with CC:T Lua.
+    local candidates = {source}
+    local body = source:match("^%s*return%s+(.+)$")
+    if body then candidates[#candidates + 1] = "return "..body end
+
+    local lastError = "manifest is invalid"
+    for _, candidate in ipairs(candidates) do
+        local chunk, err = load(candidate, "@remote manifest.lua", "t", {})
+        if not chunk then
+            chunk, err = load(candidate, "@remote manifest.lua")
+        end
+        if chunk then
+            local ok, value = pcall(chunk)
+            if ok and type(value) == "table" then
+                if type(value.version) ~= "string" or value.version == "" then
+                    return nil, "manifest version is missing"
+                end
+                if type(value.files) ~= "table" then
+                    return nil, "manifest files list is missing"
+                end
+                return value
+            end
+            lastError = ok and "manifest is invalid" or tostring(value)
+        else
+            lastError = tostring(err)
+        end
+    end
+
+    if type(textutils) == "table" and type(textutils.unserialize) == "function" then
+        local ok, value = pcall(textutils.unserialize, source)
+        if ok and type(value) == "table" then
+            if type(value.version) ~= "string" or value.version == "" then
+                return nil, "manifest version is missing"
+            end
+            if type(value.files) ~= "table" then
+                return nil, "manifest files list is missing"
+            end
+            return value
+        end
+    end
+    return nil, lastError
 end
 
 local function systemUrl(relative)
