@@ -1,7 +1,7 @@
 -- The only module that owns the public GitHub endpoints.
 local Remote = {}
-Remote.repository = "https://github.com/himantel/hcc-os"
-Remote.rawRoot = "https://raw.githubusercontent.com/himantel/hcc-os/main"
+Remote.repository = "https://github.com/kaede050492/hcc-os"
+Remote.rawRoot = "https://raw.githubusercontent.com/kaede050492/hcc-os/main"
 Remote.manifestPath = "hcc_os/manifest.lua"
 
 local function safeUrl(url)

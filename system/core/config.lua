@@ -33,7 +33,7 @@ local defaults = {
     detectorName = "",
     updateChannel = "stable",
     autoUpdateCheck = false,
-    updateRepository = "https://github.com/himantel/hcc-os",
+    updateRepository = "https://github.com/kaede050492/hcc-os",
     computerId = "",
     logLimit = 400
 }
