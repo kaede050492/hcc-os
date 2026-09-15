@@ -4,7 +4,7 @@
 
 -- GitHub is the source of truth for installation. Change only these constants
 -- when publishing HCC OS under a different public repository.
-local GITHUB_USER = "himantel"
+local GITHUB_USER = "kaede050492"
 local GITHUB_REPOSITORY = "hcc-os"
 local GITHUB_BRANCH = "main"
 local RAW_ROOT = "https://raw.githubusercontent.com/"..GITHUB_USER.."/"..GITHUB_REPOSITORY.."/"..GITHUB_BRANCH
