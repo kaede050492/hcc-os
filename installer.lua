@@ -147,7 +147,7 @@ end
 
 local function systemUrl(relative)
     if relative == "manifest.lua" then return RAW_ROOT.."/manifest.lua" end
-    return RAW_ROOT.."/hcc_os/system/"..relative
+    return RAW_ROOT.."/system/"..relative
 end
 
 local function systemPath(relative)
