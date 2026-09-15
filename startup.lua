@@ -84,7 +84,7 @@ local ok, err = xpcall(function()
     if type(bootstrap) ~= "table" or type(bootstrap.run) ~= "function" then
         error("Invalid HCC OS bootstrap entrypoint", 0)
     end
-    bootstrap.run({...})
+    bootstrap.run()
 end, function(reason)
     return traceback(reason)
 end)
