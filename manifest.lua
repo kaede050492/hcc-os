@@ -7,7 +7,7 @@ return {
     build = 1400,
     edition = "Tom's Peripherals",
     channel = "stable",
-    legacy = "hccos.v1.3.3.lua",
+    legacy = "hccos_v1.3.3.lua",
     files = {
         "manifest.lua",
         "version.lua",
@@ -51,3 +51,4 @@ return {
         "apps/recovery.lua"
     }
 }
+
