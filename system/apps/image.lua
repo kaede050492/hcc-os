@@ -1,1 +1,1 @@
-return {id="image", name="Image Viewer", implementation="hccos_v1.3.3.lua"}
+return {id="image", name="Image Viewer", source="v1.4-module"}

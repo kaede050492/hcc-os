@@ -1,6 +1,47 @@
 local Recovery = {}
 Recovery.__index = Recovery
 
+local function reasonText(value)
+    local text = tostring(value or "")
+    if text == "" or text == "nil" then return "Unknown boot failure" end
+    return text
+end
+
+local function traceback(value)
+    local text = reasonText(value)
+    if type(debug) == "table" and type(debug.traceback) == "function" then
+        local ok, result = pcall(debug.traceback, text, 2)
+        if ok and type(result) == "string" and result ~= "" then return result end
+    end
+    return text
+end
+
+local function wrapText(value, width)
+    value = reasonText(value):gsub("\r\n", "\n"):gsub("\r", "\n")
+    width = math.max(10, math.floor(tonumber(width) or 80))
+    local lines = {}
+    for line in (value.."\n"):gmatch("([^\n]*)\n") do
+        if line == "" then
+            lines[#lines+1] = ""
+        else
+            while #line > width do
+                lines[#lines+1] = line:sub(1, width)
+                line = line:sub(width + 1)
+            end
+            lines[#lines+1] = line
+        end
+    end
+    return lines
+end
+
+local function displayWidth()
+    if type(term) == "table" and type(term.getSize) == "function" then
+        local ok, width = pcall(term.getSize)
+        if ok and type(width) == "number" then return width end
+    end
+    return 80
+end
+
 local function pause()
     print("")
     print("Press any key to continue.")
@@ -14,18 +55,23 @@ local function loadModule(path)
     f.close()
     local chunk, loadError = load(source, "@"..path, "t", _ENV)
     if not chunk then return nil, loadError end
-    local ok, value = pcall(chunk)
+    local ok, value = xpcall(chunk, function(reason)
+        return traceback(reason)
+    end)
     if not ok then return nil, value end
     return value
 end
 
 function Recovery.new(context)
-    return setmetatable({context=context, selected=1, reason=nil}, Recovery)
+    return setmetatable({context=context, selected=1, reason=reasonText(nil)}, Recovery)
 end
 
 function Recovery:message(value)
-    self.context.logger:info(value)
-    print(value)
+    value = reasonText(value)
+    if self.context and self.context.logger then
+        pcall(function() self.context.logger:info(value) end)
+    end
+    for _, line in ipairs(wrapText(value, displayWidth()-2)) do print(line) end
 end
 
 function Recovery:repair()
@@ -58,12 +104,15 @@ function Recovery:resetSettings()
 end
 
 function Recovery:run(reason)
-    self.reason = reason
+    self.reason = reasonText(reason)
     while true do
         term.clear()
         term.setCursorPos(1, 1)
         print("HCC OS v1.4.0 - Recovery Mode")
-        print("Reason: "..tostring(self.reason or "manual recovery"))
+        print("Reason:")
+        for _, line in ipairs(wrapText(self.reason, displayWidth()-4)) do
+            print("  "..line)
+        end
         print("")
         local options = {
             "Start HCC OS", "Rollback", "Repair", "Reset Settings",
@@ -91,20 +140,27 @@ function Recovery:run(reason)
 end
 
 function Recovery.runStandalone(reason)
-    local base = "/.hccos/system/core/"
-    local paths = loadModule(base.."paths.lua")
-    local Logger = loadModule(base.."logger.lua")
-    local Config = loadModule(base.."config.lua")
-    local Remote = loadModule(base.."remote.lua")
-    local Updater = loadModule(base.."updater.lua")
-    if not (paths and Logger and Config and Remote and Updater) then
-        print("Recovery modules are incomplete. Run /hcc_os/installer.lua.")
-        return
-    end
-    local logger = Logger.new(paths, 400)
-    local config = Config.new(paths, logger); config:ensureDirectories(); config:load()
-    local updater = Updater.new(paths, config, logger, Remote)
-    return Recovery.new({paths=paths, logger=logger, config=config, updater=updater}):run(reason)
+    local ok, result = xpcall(function()
+        local base = "/.hccos/system/core/"
+        local paths, pathsError = loadModule(base.."paths.lua")
+        if not paths then error("Recovery module paths.lua: "..reasonText(pathsError), 0) end
+        local Logger, loggerError = loadModule(base.."logger.lua")
+        if not Logger then error("Recovery module logger.lua: "..reasonText(loggerError), 0) end
+        local Config, configError = loadModule(base.."config.lua")
+        if not Config then error("Recovery module config.lua: "..reasonText(configError), 0) end
+        local Remote, remoteError = loadModule(base.."remote.lua")
+        if not Remote then error("Recovery module remote.lua: "..reasonText(remoteError), 0) end
+        local Updater, updaterError = loadModule(base.."updater.lua")
+        if not Updater then error("Recovery module updater.lua: "..reasonText(updaterError), 0) end
+        local logger = Logger.new(paths, 400)
+        local config = Config.new(paths, logger); config:ensureDirectories(); config:load()
+        local updater = Updater.new(paths, config, logger, Remote)
+        return Recovery.new({paths=paths, logger=logger, config=config, updater=updater}):run(reason)
+    end, function(value)
+        return traceback(value)
+    end)
+    if not ok then return nil, reasonText(result) end
+    return result
 end
 
 return Recovery

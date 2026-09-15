@@ -1,1 +1,1 @@
-return {id="performance", name="Performance Graph", implementation="hccos_v1.3.3.lua"}
+return {id="performance", name="Performance Graph", source="v1.4-module"}

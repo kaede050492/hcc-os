@@ -1,18 +1,35 @@
 local Bootstrap = {}
 
+local function errorText(value)
+    local text = tostring(value or "")
+    if text == "" or text == "nil" then text = "Unknown boot failure" end
+    return text
+end
+
+local function traceback(value, level)
+    local text = errorText(value)
+    if type(debug) == "table" and type(debug.traceback) == "function" then
+        local ok, result = pcall(debug.traceback, text, level or 2)
+        if ok and type(result) == "string" and result ~= "" then return result end
+    end
+    return text
+end
+
 local function loadModule(path)
     local f, err = fs.open(path, "r")
-    if not f then error(err or ("Missing module: "..path)) end
+    if not f then error(err or ("Missing module: "..path), 0) end
     local source = f.readAll()
     f.close()
     local chunk, loadError = load(source, "@"..path, "t", _ENV)
-    if not chunk then error(loadError) end
-    local ok, value = pcall(chunk)
-    if not ok then error(value) end
+    if not chunk then error(loadError or ("Could not load module: "..path), 0) end
+    local ok, value = xpcall(chunk, function(reason)
+        return errorText(reason)
+    end)
+    if not ok then error(value, 0) end
     return value
 end
 
-function Bootstrap.run(arguments)
+local function runInternal(arguments)
     arguments = arguments or {}
     local base = "/.hccos/system/"
     local paths = loadModule(base.."core/paths.lua")
@@ -22,7 +39,12 @@ function Bootstrap.run(arguments)
     local Updater = loadModule(base.."core/updater.lua")
     local Setup = loadModule(base.."core/setup.lua")
     local Recovery = loadModule(base.."core/recovery.lua")
-    local Bridge = loadModule(base.."core/legacy_bridge.lua")
+    local Widgets = loadModule(base.."ui/widgets.lua")
+    local Icons = loadModule(base.."ui/icons.lua")
+    local Taskbar = loadModule(base.."ui/taskbar.lua")
+    local StartMenu = loadModule(base.."ui/start_menu.lua")
+    local Desktop = loadModule(base.."ui/desktop.lua")
+    local AppCatalog = loadModule(base.."apps/app_catalog.lua")
     local logger = Logger.new(paths, 400)
     local config = Config.new(paths, logger)
     config:ensureDirectories()
@@ -51,14 +73,18 @@ function Bootstrap.run(arguments)
     local updater = Updater.new(paths, config, logger, Remote)
     local context = {
         paths=paths, config=config, logger=logger, remote=Remote,
-        updater=updater, localManifest=updater.localManifest
+        updater=updater, localManifest=updater.localManifest,
+        ui={widgets=Widgets, icons=Icons, taskbar=Taskbar, startMenu=StartMenu}
     }
+    context.enterRecovery = function(reason)
+        return Recovery.new(context):run(reason or "manual recovery request")
+    end
 
     _G.HCCV14 = {
         version="1.4.0", build=1400, context=context,
         autoUpdatePending=config.data.autoUpdateCheck,
-        attachLegacy=function(environment)
-            _G.HCCV14.legacyMark=environment.mark
+        attachApp=function(environment)
+            _G.HCCV14.appMark=environment.mark
             local app = loadModule(base.."apps/update_recovery.lua")
             if type(app.attach) == "function" then app.attach(environment, _G.HCCV14) end
         end,
@@ -68,7 +94,7 @@ function Bootstrap.run(arguments)
             local handled
             if type(handleOrReason) == "table" then handled=updater:handleHttpSuccess(url, handleOrReason)
             else handled=updater:handleHttpFailure(url, handleOrReason) end
-            if handled and _G.HCCV14.legacyMark then _G.HCCV14.legacyMark(_G.HCCV14.legacyUpdateWindow) end
+            if handled and _G.HCCV14.appMark then _G.HCCV14.appMark(_G.HCCV14.updateWindow) end
             return handled
         end,
         beginUpdate=function(manifest) return updater:begin(manifest) end,
@@ -92,12 +118,27 @@ function Bootstrap.run(arguments)
         -- Recovery app performs the optional check on its first service tick.
     end
 
-    local ok, err = Bridge.run(paths, logger)
+    local ok, result = xpcall(function()
+        return Desktop.run(context, AppCatalog)
+    end, function(reason)
+        return traceback(reason, 3)
+    end)
     if not ok then
-        logger:error("Desktop start failed: "..tostring(err))
-        return Recovery.new(context):run(tostring(err))
+        local failure = errorText(result)
+        pcall(function() logger:error("Desktop start failed: "..failure) end)
+        return Recovery.new(context):run(failure)
     end
-    return "stopped"
+    return result
+end
+
+function Bootstrap.run(arguments)
+    local ok, result = xpcall(function()
+        return runInternal(arguments)
+    end, function(reason)
+        return traceback(reason, 3)
+    end)
+    if not ok then error(errorText(result), 0) end
+    return result
 end
 
 return Bootstrap

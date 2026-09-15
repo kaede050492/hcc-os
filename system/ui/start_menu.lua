@@ -1,1 +1,1 @@
-return {name="Start Menu", preserves="legacy start menu and keyboard navigation"}
+return {name="Start Menu", source="v1.4-module", features={"keyboard-navigation", "app-catalog"}}

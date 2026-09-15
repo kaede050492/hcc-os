@@ -1,1 +1,1 @@
-return {id="terminal", name="Terminal", implementation="hccos_v1.3.3.lua"}
+return {id="terminal", name="Terminal", source="v1.4-module"}

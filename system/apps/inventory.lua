@@ -1,1 +1,1 @@
-return {id="inventory", name="Inventory Viewer", implementation="hccos_v1.3.3.lua"}
+return {id="inventory", name="Inventory Viewer", source="v1.4-module"}

@@ -1,1 +1,1 @@
-return {name="Taskbar", preserves="legacy taskbar, clock, task buttons, F1 menu"}
+return {name="Taskbar", source="v1.4-module", features={"clock", "tasks", "start-menu"}}

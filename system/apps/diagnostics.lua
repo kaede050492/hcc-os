@@ -1,1 +1,1 @@
-return {id="diagnostics", name="Diagnostics", implementation="hccos_v1.3.3.lua"}
+return {id="diagnostics", name="Diagnostics", source="v1.4-module"}

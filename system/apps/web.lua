@@ -1,1 +1,1 @@
-return {id="web", name="HCC Web", implementation="hccos_v1.3.3.lua"}
+return {id="web", name="HCC Web", source="v1.4-module"}

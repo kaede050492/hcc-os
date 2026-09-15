@@ -1,1 +1,1 @@
-return {id="clock", name="Clock", implementation="hccos_v1.3.3.lua"}
+return {id="clock", name="Clock", source="v1.4-module"}

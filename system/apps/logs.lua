@@ -1,1 +1,1 @@
-return {id="logs", name="Log Viewer", implementation="hccos_v1.3.3.lua"}
+return {id="logs", name="Log Viewer", source="v1.4-module"}

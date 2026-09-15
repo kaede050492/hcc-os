@@ -1,1 +1,1 @@
-return {id="radar", name="Player Radar", implementation="hccos_v1.3.3.lua"}
+return {id="radar", name="Player Radar", source="v1.4-module"}

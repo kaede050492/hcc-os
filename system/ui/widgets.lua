@@ -1,5 +1,4 @@
--- UI module boundary for v1.4.0. The legacy desktop supplies the compatible
--- Canvas widget implementation while new screens use these helpers.
+-- HCC OS v1.4 widget helpers used by the modular desktop and applications.
 return {
     panel = function(canvas, x, y, w, h, fill, edge)
         canvas:filledRectangle(x, y, w, h, fill)

@@ -1,27 +1,26 @@
--- v1.3.3 application catalog retained as a migration boundary.
--- The implementation is loaded from the compatibility pack so no existing
--- application, image decoder, or Rich Pixel Icon is removed during migration.
+-- HCC OS v1.4 application catalog. Applications are loaded from the
+-- corresponding system/apps module and are not executed through v1.3.3.
 
 return {
-    {id="clock", name="Clock", source="legacy"},
-    {id="calendar", name="Calendar", source="legacy"},
-    {id="radar", name="Player Radar", source="legacy"},
-    {id="server", name="Server Monitor", source="legacy"},
-    {id="notepad", name="Notepad", source="legacy"},
-    {id="files", name="Files", source="legacy"},
-    {id="currency", name="Currency Calculator", source="legacy"},
-    {id="image", name="Image Viewer", source="legacy"},
-    {id="web", name="HCC Web", source="legacy"},
-    {id="inventory", name="Inventory Viewer", source="legacy"},
-    {id="peripherals", name="Peripheral Manager", source="legacy"},
-    {id="network", name="Network Manager", source="legacy"},
-    {id="resource", name="Resource Monitor", source="legacy"},
-    {id="logs", name="Log Viewer", source="legacy"},
-    {id="system", name="System Monitor", source="legacy"},
-    {id="performance", name="Performance Graph", source="legacy"},
-    {id="taskmgr", name="Task Manager", source="legacy"},
-    {id="terminal", name="Terminal", source="legacy"},
-    {id="settings", name="Settings", source="legacy"},
-    {id="diagnostics", name="Diagnostics", source="legacy"},
+    {id="clock", name="Clock", source="module"},
+    {id="calendar", name="Calendar", source="module"},
+    {id="radar", name="Player Radar", source="module"},
+    {id="server", name="Server Monitor", source="module"},
+    {id="notepad", name="Notepad", source="module"},
+    {id="files", name="Files", source="module"},
+    {id="currency", name="Currency Calculator", source="module"},
+    {id="image", name="Image Viewer", source="module"},
+    {id="web", name="HCC Web", source="module"},
+    {id="inventory", name="Inventory Viewer", source="module"},
+    {id="peripherals", name="Peripheral Manager", source="module"},
+    {id="network", name="Network Manager", source="module"},
+    {id="resource", name="Resource Monitor", source="module"},
+    {id="logs", name="Log Viewer", source="module"},
+    {id="system", name="System Monitor", source="module"},
+    {id="performance", name="Performance Graph", source="module"},
+    {id="taskmgr", name="Task Manager", source="module"},
+    {id="terminal", name="Terminal", source="module"},
+    {id="settings", name="Settings", source="module"},
+    {id="diagnostics", name="Diagnostics", source="module"},
     {id="updates", name="Update & Recovery", source="v1.4"}
 }

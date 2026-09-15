@@ -1,1 +1,1 @@
-return {id="taskmgr", name="Task Manager", implementation="hccos_v1.3.3.lua"}
+return {id="taskmgr", name="Task Manager", source="v1.4-module"}

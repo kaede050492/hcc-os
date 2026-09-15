@@ -1,1 +1,1 @@
-return {id="network", name="Network Manager", implementation="hccos_v1.3.3.lua"}
+return {id="network", name="Network Manager", source="v1.4-module"}

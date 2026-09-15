@@ -13,7 +13,7 @@ end
 function UpdateRecovery:init()
     self.env = self.env or UpdateRecovery.environment
     self.api = _G.HCCV14
-    self.api.legacyUpdateWindow = self.win
+    self.api.updateWindow = self.win
     self.status = self.api.autoUpdatePending and "Automatic check pending" or "Ready"
     self.result = nil
     self.error = nil
@@ -66,7 +66,7 @@ function UpdateRecovery:rollback()
 end
 
 function UpdateRecovery:openRecovery()
-    shell.run("/hcc_os/boot.lua", "--recovery")
+    shell.run("/startup.lua", "--recovery")
 end
 
 function UpdateRecovery:update()

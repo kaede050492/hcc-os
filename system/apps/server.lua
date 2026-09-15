@@ -1,1 +1,1 @@
-return {id="server", name="Server Monitor", implementation="hccos_v1.3.3.lua"}
+return {id="server", name="Server Monitor", source="v1.4-module"}
