@@ -8,7 +8,7 @@ local GITHUB_USER = "kaede050492"
 local GITHUB_REPOSITORY = "hcc-os"
 local GITHUB_BRANCH = "main"
 local RAW_ROOT = "https://raw.githubusercontent.com/"..GITHUB_USER.."/"..GITHUB_REPOSITORY.."/"..GITHUB_BRANCH
-local MANIFEST_URL = RAW_ROOT.."/hcc_os/manifest.lua"
+local MANIFEST_URL = RAW_ROOT.."/manifest.lua"
 
 -- CC:T target paths. The Windows/GitHub hcc_os/ directory is never used as a
 -- target directory on the computer being installed.
@@ -78,17 +78,18 @@ local function fetch(url)
     if type(url) ~= "string" or not url:match("^https://[^%s]+$") then
         return nil, "unsafe HTTPS URL"
     end
-    local ok, handle = pcall(http.get, url, { ["User-Agent"] = "HCC-OS-Installer/1.4.0" })
-    if not ok or not handle then return nil, tostring(handle or "HTTP request denied") end
+    local handle, err = http.get(url)
+    if not handle then return nil, "HTTP failed: "..url..": "..tostring(err) end
     local readOk, body = pcall(handle.readAll)
     local code = 200
     if type(handle.getResponseCode) == "function" then
         local codeOk, responseCode = pcall(handle.getResponseCode)
         if codeOk and responseCode then code = responseCode end
     end
-    if handle.close then pcall(handle.close) end
-    if not readOk then return nil, "HTTP response could not be read" end
-    if code < 200 or code >= 300 then return nil, "HTTP "..tostring(code) end
+    local closeOk, closeError = pcall(handle.close)
+    if not readOk then return nil, "HTTP failed: "..url..": response could not be read: "..tostring(body) end
+    if not closeOk then return nil, "HTTP failed: "..url..": response close failed: "..tostring(closeError) end
+    if code < 200 or code >= 300 then return nil, "HTTP failed: "..url..": HTTP "..tostring(code) end
     if type(body) ~= "string" or #body == 0 then return nil, "empty HTTP response" end
     return body
 end
@@ -105,7 +106,7 @@ local function parseManifest(source)
 end
 
 local function systemUrl(relative)
-    if relative == "manifest.lua" then return RAW_ROOT.."/hcc_os/manifest.lua" end
+    if relative == "manifest.lua" then return RAW_ROOT.."/manifest.lua" end
     return RAW_ROOT.."/hcc_os/system/"..relative
 end
 
