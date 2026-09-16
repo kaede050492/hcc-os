@@ -6,7 +6,7 @@ if type(require)=="function" then
     local ok,value=pcall(require,"hcc.tom_gpu")
     if ok and type(value)=="table" then TomGpu=value end
 end
-local devices={list={},keyboards={},inventories={},modems={},gpuAvailable=false,keyboardAvailable=false,detectorAvailable=false}
+local devices={list={},keyboards={},inventories={},modems={},gpuAvailable=false,keyboardAvailable=false,detectorAvailable=false,detectorApi={}}
 local gpu
 local Driver={w=576,h=320,metrics={},cellWidth=6,calls=0,syncs=0,error=nil}
 local function hasMethods(p,names)
@@ -15,8 +15,15 @@ local function hasMethods(p,names)
     return true
 end
 local function wasTerminated(value) return tostring(value or ""):lower():find("terminated",1,true)~=nil end
+local function isPlayerDetectorType(types)
+    for _,kind in ipairs(types or {}) do
+        local normalised=tostring(kind):lower():gsub("[^%w]","")
+        if normalised=="playerdetector" then return true end
+    end
+    return false
+end
 local function scanDevices()
-    devices.list={}; devices.detector=nil; devices.detectorName=nil; devices.keyboards={}; devices.inventories={}; devices.modems={}
+    devices.list={}; devices.detector=nil; devices.detectorName=nil; devices.detectorApi={}; devices.keyboards={}; devices.inventories={}; devices.modems={}
     devices.gpuCapabilities={}; devices.backend="tom_gpu"
     devices.gpuAvailable=false; devices.keyboardAvailable=false; devices.detectorAvailable=false
     local candidates={}
@@ -34,9 +41,13 @@ local function scanDevices()
                 hasMethods(p,{"getSize","refreshSize","setSize","filledRectangle","line","drawText","getTextLength","sync","fill"}) then
                 candidates[#candidates+1]={name=name,p=p,capabilities=TomGpu and TomGpu.capabilities and TomGpu.capabilities(p) or {}}
             end
-            if hasMethods(p,{"getOnlinePlayers","getPlayerPos"}) and
+            local detectorApi={getPlayer=type(p.getPlayer)=="function",getPlayerPos=type(p.getPlayerPos)=="function",
+                getOnlinePlayers=type(p.getOnlinePlayers)=="function",getPlayersInRange=type(p.getPlayersInRange)=="function"}
+            local detectorMethods=(detectorApi.getOnlinePlayers and (detectorApi.getPlayer or detectorApi.getPlayerPos)) or
+                detectorApi.getPlayersInRange or detectorApi.getPlayer or detectorApi.getPlayerPos
+            if (isPlayerDetectorType(types) or detectorMethods) and
                 (cfg.detectorName=="" or name==cfg.detectorName) and not devices.detector then
-                devices.detector=p; devices.detectorName=name
+                devices.detector=p; devices.detectorName=name; devices.detectorApi=detectorApi
             end
             if hasMethods(p,{"setFireNativeEvents"}) and (cfg.keyboardName=="" or name==cfg.keyboardName) then
                 -- Keep peripheral names on events, enabling filtering and no mode mutation.

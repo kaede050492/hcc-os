@@ -236,8 +236,17 @@ return function(E)
             end
         end
     end
+    local function dispatchSystemEvent(e)
+        for i=#OS.windows,1,-1 do
+            local win=OS.windows[i]
+            if win and not win.crash and win.app and type(win.app.onSystemEvent)=="function" then
+                appCall(win,"onSystemEvent",unpack(e))
+            end
+        end
+    end
     local function handleEvent(e)
         local name=e[1]
+        dispatchSystemEvent(e)
         if name=="http_success" or name=="http_failure" then
             local handled=false
             if HCCV15 and type(HCCV15.handleHttp)=="function" then
