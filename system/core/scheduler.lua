@@ -3,15 +3,32 @@ return function(E)
  local _ENV=env
 local function boot()
     print("[HCC OS] Detecting Tom's GPU, keyboard and Player Detector...")
-    local good=scanDevices()
+    local good,status=scanDevices()
+    if status=="terminate" then return false end
     if not good then
         print("[HCC OS] "..(Driver.error or "tm_gpu not found"))
-        print("Connect GPU + Bitmap Monitors. Press F5 to retry, Ctrl+T to exit.")
+        print("Connect GPU + Bitmap Monitors. Waiting 10 seconds.")
+        print("Press F5 to retry now, Ctrl+T to exit.")
+        local timeout=os.startTimer(10)
+        local retry=os.startTimer(1)
+        local attempts=1
         while not good do
             local e={os.pullEventRaw()}
-            if e[1]=="terminate" then return false end
-            if e[1]=="peripheral" or (e[1]=="key" and e[2]==keys.f5) then good=scanDevices() end
+            if e[1]=="terminate" then
+                os.cancelTimer(timeout); os.cancelTimer(retry); return false
+            elseif e[1]=="timer" and e[2]==timeout then
+                error("Tom's GPU was not detected within 10 seconds: "..tostring(Driver.error or "not found"),0)
+            elseif e[1]=="peripheral" or e[1]=="peripheral_attach" or e[1]=="peripheral_detach" or
+                (e[1]=="key" and e[2]==keys.f5) or (e[1]=="timer" and e[2]==retry) then
+                os.cancelTimer(retry)
+                if attempts<12 then
+                    attempts=attempts+1; good,status=scanDevices()
+                    if status=="terminate" then os.cancelTimer(timeout); return false end
+                    if not good then retry=os.startTimer(1) end
+                end
+            end
         end
+        os.cancelTimer(timeout); os.cancelTimer(retry)
     end
     Driver.clear(0xFF000000)
     local list={}; local c=canvas(list,0,0,Driver.w,Driver.h)
@@ -38,9 +55,12 @@ local function boot()
 end
 local function run()
     if not boot() then return end
-    local timer,timerAt; local taskSecond=-1; local metricsAt=now(); local lastR,lastS=OS.renderCount,Driver.syncs
+    local timer,timerAt,gpuMissingTimer; local taskSecond=-1; local metricsAt=now(); local lastR,lastS=OS.renderCount,Driver.syncs
     while OS.running do
         local t=now(); local deadline=t+1
+        if gpuAvailable() then
+            if gpuMissingTimer then os.cancelTimer(gpuMissingTimer); gpuMissingTimer=nil end
+        elseif not gpuMissingTimer then gpuMissingTimer=os.startTimer(10) end
         if floor(t)~=taskSecond then
             taskSecond=floor(t); OS.taskDirty=true
             invalidate(box(Driver.w-92,Driver.h-TASK,92,TASK))
@@ -75,6 +95,9 @@ local function run()
         end
         local e={os.pullEventRaw()}
         if e[1]=="timer" and e[2]==OS.frameTimer then OS.frameTimer=nil; render()
+        elseif e[1]=="timer" and e[2]==gpuMissingTimer then
+            gpuMissingTimer=nil
+            if not gpuAvailable() then error("Tom's GPU remained unavailable for 10 seconds: "..tostring(Driver.error or "not found"),0) end
         elseif e[1]=="timer" and OS.appTimers[e[2]] then
             local w=OS.appTimers[e[2]]; OS.appTimers[e[2]]=nil; w.timer=nil
             if not w.minimized and not w.crash then
@@ -87,6 +110,7 @@ local function run()
         elseif gpuAvailable() then OS.reportedGpuError=false end
     end
     if timer then os.cancelTimer(timer) end
+    if gpuMissingTimer then os.cancelTimer(gpuMissingTimer) end
     if OS.frameTimer then os.cancelTimer(OS.frameTimer) end
     for id in pairs(OS.appTimers) do os.cancelTimer(id) end
 end

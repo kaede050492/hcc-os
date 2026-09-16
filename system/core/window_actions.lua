@@ -18,7 +18,8 @@ local function tileWindows()
     OS.active=visible[#visible]; taskDirty()
 end
 rescan=function()
-    local ok=scanDevices()
+    local ok,status=scanDevices()
+    if status=="terminate" then OS.running=false; return end
     OS.pointer.x=clamp(OS.pointer.x,0,Driver.w-1); OS.pointer.y=clamp(OS.pointer.y,0,Driver.h-1)
     OS.drag=nil; OS.held={}
     for _,w in ipairs(OS.windows) do

@@ -1,7 +1,7 @@
 return function(E)
  local env=setmetatable({},{__index=E})
  local _ENV=env
-local devices={list={},keyboards={},inventories={},modems={}}
+local devices={list={},keyboards={},inventories={},modems={},gpuAvailable=false,keyboardAvailable=false,detectorAvailable=false}
 local gpu
 local Driver={w=576,h=320,metrics={},cellWidth=6,calls=0,syncs=0,error=nil}
 local function hasMethods(p,names)
@@ -9,15 +9,19 @@ local function hasMethods(p,names)
     for _,n in ipairs(names) do if type(p[n])~="function" then return false end end
     return true
 end
+local function wasTerminated(value) return tostring(value or ""):lower():find("terminated",1,true)~=nil end
 local function scanDevices()
     devices.list={}; devices.detector=nil; devices.detectorName=nil; devices.keyboards={}; devices.inventories={}; devices.modems={}
+    devices.gpuAvailable=false; devices.keyboardAvailable=false; devices.detectorAvailable=false
     local candidates={}
     local namesOk,names=pcall(peripheral.getNames)
+    if not namesOk and wasTerminated(names) then return false,"terminate" end
     if not namesOk or type(names)~="table" then gpu=nil; devices.gpuName=nil; Driver.error="Peripheral enumeration failed"; logLine("ERROR",Driver.error); return false end
     table.sort(names)
     for _,name in ipairs(names) do
         local ok,p=pcall(peripheral.wrap,name)
         local typeOk,typesValue=pcall(function() return {peripheral.getType(name)} end); local types=typeOk and typesValue or {"unknown"}
+        if (not ok and wasTerminated(p)) or (not typeOk and wasTerminated(typesValue)) then return false,"terminate" end
         devices.list[#devices.list+1]={name=name,kind=table.concat(types,",")}
         if ok and p then
             if hasMethods(p,{"getSize","refreshSize","setSize","filledRectangle","line","drawText","getTextLength","sync","fill"}) then
@@ -29,18 +33,22 @@ local function scanDevices()
             end
             if hasMethods(p,{"setFireNativeEvents"}) and (cfg.keyboardName=="" or name==cfg.keyboardName) then
                 -- Keep peripheral names on events, enabling filtering and no mode mutation.
-                pcall(p.setFireNativeEvents,false)
+                local keyboardOk,keyboardError=pcall(p.setFireNativeEvents,false)
+                if not keyboardOk and wasTerminated(keyboardError) then return false,"terminate" end
                 devices.keyboards[name]=true
             end
             -- Inventory APIs vary between mods.  Classify only peripherals
             -- that expose both the standard list and size methods.
             if hasMethods(p,{"size","list"}) then
-                local valid=pcall(function() local n=p.size(); assert(finite(n) and n>=1) end)
-                if valid then devices.inventories[#devices.inventories+1]={name=name,p=p} end
+                devices.inventories[#devices.inventories+1]={name=name,p=p}
             end
             if hasMethods(p,{"open","close","isOpen","transmit"}) then
                 local wireless=false
-                if type(p.isWireless)=="function" then local wok,wvalue=pcall(p.isWireless); wireless=wok and wvalue==true end
+                if type(p.isWireless)=="function" then
+                    local wok,wvalue=pcall(p.isWireless)
+                    if not wok and wasTerminated(wvalue) then return false,"terminate" end
+                    wireless=wok and wvalue==true
+                end
                 devices.modems[#devices.modems+1]={name=name,p=p,wireless=wireless}
             end
         end
@@ -52,29 +60,46 @@ local function scanDevices()
     end
     gpu=chosen and chosen.p or nil
     devices.gpuName=chosen and chosen.name or nil
-    Driver.error=nil; Driver.metrics={}
+    Driver.error=gpu and nil or "Tom's GPU not found"; Driver.metrics={}
     if gpu then
-        local ok,err=pcall(function()
-            gpu.refreshSize()
-            sleep(0.1) -- refreshSize is queued on the Minecraft server thread.
+        local ok,err=pcall(gpu.refreshSize)
+        if not ok and wasTerminated(err) then gpu=nil; Driver.error="Terminated"; return false,"terminate" end
+        if ok then
+            -- refreshSize is queued on the server thread. Yield without
+            -- allowing a protected call to consume the terminate event.
+            local refreshTimer=os.startTimer(0.1)
+            local deferred={}; local refreshed=false
+            while not refreshed do
+                local event={os.pullEventRaw()}
+                if event[1]=="terminate" then
+                    os.cancelTimer(refreshTimer); gpu=nil; Driver.error="Terminated"
+                    return false,"terminate"
+                end
+                if event[1]=="timer" and event[2]==refreshTimer then refreshed=true
+                else deferred[#deferred+1]=event end
+            end
+            for _,event in ipairs(deferred) do os.queueEvent(unpack(event)) end
+        end
+        if ok then ok,err=pcall(function()
             gpu.setSize(cfg.resolution)
             if gpu.setFont then gpu.setFont("ascii") end
             Driver.cellWidth=6
-            for ch=32,126 do
-                local width=gpu.getTextLength(string.char(ch),1,1)
-                Driver.metrics[string.char(ch)]=width
-                Driver.cellWidth=max(Driver.cellWidth,width)
-            end
+            local width=gpu.getTextLength("M",1,1)
+            if finite(width) and width>0 then Driver.metrics.M=width; Driver.cellWidth=max(Driver.cellWidth,width) end
             local w,h=gpu.getSize()
             assert(finite(w) and finite(h) and w>=96 and h>=96,"Display must be at least 96x96")
             Driver.w,Driver.h=floor(w),floor(h)
-        end)
+        end) end
+        if not ok and wasTerminated(err) then gpu=nil; Driver.error="Terminated"; return false,"terminate" end
         if not ok then
             Driver.error=tostring(err); gpu=nil
             if context and context.logger then pcall(context.logger.error,context.logger,"Tom's GPU initialization failed: "..Driver.error) end
         end
     end
-    return gpu~=nil
+    devices.gpuAvailable=gpu~=nil
+    devices.keyboardAvailable=next(devices.keyboards)~=nil
+    devices.detectorAvailable=devices.detector~=nil
+    return devices.gpuAvailable
 end
 function Driver.getWidth() return Driver.w end
 function Driver.getHeight() return Driver.h end

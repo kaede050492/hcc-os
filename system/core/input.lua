@@ -34,7 +34,7 @@ local function keyInput(k)
     if ctrl and k==keys.tab then
         if #OS.windows>0 then focus(OS.windows[1]) end; return
     end
-    if k==keys.f5 and not gpu then rescan(); return end
+    if k==keys.f5 and not gpuAvailable() then rescan(); return end
     if k==keys.f6 then tileWindows(); return end
     if k==keys.f5 and not OS.active then rescan(); return end
     local w=OS.active
@@ -88,13 +88,13 @@ local function handleEvent(e)
                 break
             end
         end
-    elseif name=="terminate" then requestExit()
+    elseif name=="terminate" then OS.running=false
     elseif name=="key" then keyInput(e[2])
     elseif name=="key_up" then OS.held[e[2]]=nil
     elseif name=="char" or name=="paste" then charInput(e[2])
     elseif name=="portable_disconnect" then OS.held={}; OS.mouseButtons={}; OS.drag=nil; OS.hover=nil
-    elseif name=="peripheral" or name=="peripheral_detach" then
-        notify(name=="peripheral" and "Peripheral attached" or "Peripheral detached",P.warning); rescan()
+    elseif name=="peripheral" or name=="peripheral_attach" or name=="peripheral_detach" then
+        notify(name=="peripheral_detach" and "Peripheral detached" or "Peripheral attached",P.warning); rescan()
     elseif name=="monitor_resize" or name=="tm_monitor_resize" then rescan()
     elseif name:sub(1,11)=="tm_monitor_" then
         local offset=0
