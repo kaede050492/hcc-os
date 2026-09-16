@@ -31,6 +31,39 @@ local function persistNativePng(path,key)
     end
     return nil,"PNG wallpaper storage unavailable"
 end
+local function writeRawPng(path,body)
+    if type(path)~="string" or path=="" or type(body)~="string" or #body==0 then return false,"invalid PNG data" end
+    local ok,err=pcall(function()
+        local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+        local f,e=fs.open(path,"w"); if not f then error(e or "PNG is not writable") end
+        local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
+    end)
+    return ok,err
+end
+local function imagePathFor(filename,required)
+    local roots={imageStorage}; local seen={[imageStorage]=true}
+    for _,mount in ipairs(storagePaths.storageMounts or {}) do
+        local root=fs.combine(mount,"hccos/images")
+        if not seen[root] then seen[root]=true; roots[#roots+1]=root end
+    end
+    for _,root in ipairs(roots) do
+        local ok,free=pcall(fs.getFreeSpace,root)
+        if ok and (free=="unlimited" or (type(free)=="number" and free>=tonumber(required or 0)+4096)) then return fs.combine(root,filename) end
+    end
+    return fs.combine(imageStorage,filename)
+end
+local function saveRawPngDialog(body,defaultPath)
+    dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
+        if b~="Save" then return end
+        value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
+        local ok,err=writeRawPng(value,body)
+        if ok then notify("PNG image saved",P.success) else
+            local filename=value:match("([^/]+)$") or "image.png"; local fallback=imagePathFor(filename,#body)
+            if fallback~=value then ok,err=writeRawPng(fallback,body); if ok then notify("PNG image saved to "..fallback,P.success); return end end
+            errorBox(err)
+        end
+    end,defaultPath)
+end
 local function imageKind(path,contentType)
     local c=tostring(contentType or ""):lower():match("^[^;]+") or ""; local p=tostring(path or ""):lower()
     if c=="image/png" or p:match("%.png$") or p:match("%.png[?#]") then return "png" end
@@ -47,7 +80,7 @@ local function responseHeaders(handle)
 end
 local ImageViewer={}
 function ImageViewer:init(path)
-    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.nativeImage=nil; self.error=nil; self.status="Ready"; self.importJob=nil
+    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.rawPngBody=nil; self.importRawPng=nil; self.nativeImage=nil; self.error=nil; self.status="Ready"; self.importJob=nil
     self.images=imageList()
     if type(path)=="string" and path~="" then self:loadPath(path) elseif self.images[1] then self:loadPath(self.images[1]) end
 end
@@ -55,7 +88,7 @@ function ImageViewer:releaseNative()
     if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end
 end
 function ImageViewer:loadPath(path)
-    self:cancelImport(); self:releaseNative(); self.error=nil; self.status="Loading..."
+    self:cancelImport(); self:releaseNative(); self.rawPngBody=nil; self.importRawPng=nil; self.error=nil; self.status="Loading..."
     path=tostring(path or "")
     local ok,result,reason=xpcall(function()
         local kind=imageKind(path)
@@ -66,13 +99,13 @@ function ImageViewer:loadPath(path)
             if kind=="png" then
                 local nativeOk,native,nativeError=pcall(nativeDecode,body)
                 if not nativeOk then native=nil; nativeError=tostring(native) end
-                if native and native.width<=availableW and native.height<=availableH then return {native=native},nil end
+                if native and native.width<=availableW and native.height<=availableH then return {native=native,rawPng=body},nil end
                 if native then nativeFree(native) end
                 local decodedOk,decoded=pcall(pngDecode,body)
                 if not decodedOk then return nil,tostring(decoded) end
                 local preparedOk,data=pcall(imagePrepare,decoded,availableW,availableH)
                 if not preparedOk or not data then return nil,tostring(preparedOk and "image resize failed" or data) end
-                return {data=data},nil
+                return {data=data,rawPng=body},nil
             end
             local decodedOk,decoded=pcall(jpegDecode,body)
             if not decodedOk then return nil,tostring(decoded) end
@@ -88,7 +121,7 @@ function ImageViewer:loadPath(path)
     if not result then
         self.status="Image load failed"; self.error=tostring(reason or "unknown image error"); logLine("ERROR","Image load: "..self.error); mark(self.win); return false
     end
-    self.path=path; self.data=result.data; self.nativeImage=result.native; self.offsetX=0; self.offsetY=0; self.status="Image ready"
+    self.path=path; self.data=result.data; self.rawPngBody=result.rawPng; self.nativeImage=result.native; self.offsetX=0; self.offsetY=0; self.status="Image ready"
     for i,v in ipairs(self.images or {}) do if v==path then self.selected=i end end
     mark(self.win); return true
 end
@@ -99,6 +132,10 @@ function ImageViewer:openDialog()
     end,self.path or fs.combine(imageStorage,"image.hcci"))
 end
 function ImageViewer:saveAs()
+    if self.rawPngBody then
+        saveRawPngDialog(self.rawPngBody,self.path and self.path:lower():match("%.png$") and self.path or fs.combine(imageStorage,"image.png"))
+        return
+    end
     if self.nativeImage and self.path then
         dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
             if b~="Save" then return end
@@ -132,6 +169,14 @@ function ImageViewer:importError(message)
 end
 function ImageViewer:finishImportData(data)
     if not data then self:importError("Downloaded data could not be converted to an image"); return end
+    if self.importRawPng then
+        local path=imagePathFor("imported_"..tostring(floor(now()*1000))..".png",#self.importRawPng)
+        local saved,saveError=writeRawPng(path,self.importRawPng)
+        if not saved then self:importError("Original PNG could not be saved: "..tostring(saveError)); return end
+        self.data=data; self.rawPngBody=self.importRawPng; self.path=path; self.nativeImage=nil; self.error=nil; self.status="PNG imported and saved"; self.images=imageList()
+        for i,value in ipairs(self.images) do if value==path then self.selected=i end end
+        mark(self.win); notify("PNG image imported and saved",P.success); return
+    end
     local path=fs.combine(imageStorage,"imported_"..tostring(floor(now()*1000))..".hcci")
     local saved,saveError=imageWrite(path,data)
     if not saved then self:importError("Image was decoded but could not be saved: "..tostring(saveError)); return end
@@ -145,6 +190,8 @@ function ImageViewer:startImportBody(job,body)
     if #body>cfg.maxImageDownload then self:importError("Downloaded image exceeds the configured size limit"); return end
     local kind=imageKind(job.url,job.contentType)
     if not kind then self:importError("Unsupported image format (PNG, JPEG or HCCI required)"); return end
+    self.importRawPng=kind=="png" and body or nil
+    self.rawPngBody=self.importRawPng
     local availableW=max(1,(self.win and self.win.w or 530)-165); local availableH=max(1,(self.win and self.win.h or 282)-80)
     if kind=="png" then
         local nativeOk,native,nativeError=pcall(nativeDecode,body)
@@ -238,7 +285,7 @@ function ImageViewer:importUrl()
         url=tostring(url or ""):gsub("%s+","")
         if not url:match("^https?://[^%s]+$") then errorBox("Only HTTP/HTTPS URLs are allowed"); return end
         if type(http)~="table" or type(http.request)~="function" then errorBox("CC:T HTTP request API unavailable"); return end
-        self:cancelImport(); self:releaseNative(); self.error=nil; self.importNotice=nil; self.status="Downloading... 0%"
+        self:cancelImport(); self:releaseNative(); self.rawPngBody=nil; self.importRawPng=nil; self.error=nil; self.importNotice=nil; self.status="Downloading... 0%"
         local ok,accepted=pcall(http.request,url,nil,{["User-Agent"]="HCC-Image-Viewer/1.5"},true)
         if not ok or accepted==false or accepted==nil then self:importError("HTTP image request failed or was denied"); return end
         self.importJob={stage="wait",url=url,startedAt=now()}; mark(self.win)

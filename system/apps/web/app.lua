@@ -32,6 +32,39 @@ local function persistNativePng(path,key)
     end
     return nil,"PNG wallpaper storage unavailable"
 end
+local function writeRawPng(path,body)
+    if type(path)~="string" or path=="" or type(body)~="string" or #body==0 then return false,"invalid PNG data" end
+    local ok,err=pcall(function()
+        local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+        local f,e=fs.open(path,"w"); if not f then error(e or "PNG is not writable") end
+        local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
+    end)
+    return ok,err
+end
+local function imagePathFor(filename,required)
+    local roots={imageStorage}; local seen={[imageStorage]=true}
+    for _,mount in ipairs(storagePaths.storageMounts or {}) do
+        local root=fs.combine(mount,"hccos/images")
+        if not seen[root] then seen[root]=true; roots[#roots+1]=root end
+    end
+    for _,root in ipairs(roots) do
+        local ok,free=pcall(fs.getFreeSpace,root)
+        if ok and (free=="unlimited" or (type(free)=="number" and free>=tonumber(required or 0)+4096)) then return fs.combine(root,filename) end
+    end
+    return fs.combine(imageStorage,filename)
+end
+local function saveRawPngDialog(body,defaultPath)
+    dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
+        if b~="Save" then return end
+        value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
+        local ok,err=writeRawPng(value,body)
+        if ok then notify("PNG image saved",P.success) else
+            local filename=value:match("([^/]+)$") or "web_image.png"; local fallback=imagePathFor(filename,#body)
+            if fallback~=value then ok,err=writeRawPng(fallback,body); if ok then notify("PNG image saved to "..fallback,P.success); return end end
+            errorBox(err)
+        end
+    end,defaultPath)
+end
 local function webUnescape(s)
     return tostring(s or ""):gsub("&amp;","&"):gsub("&lt;","<"):gsub("&gt;",">"):gsub("&quot;",'"'):gsub("&#39;","'")
 end
@@ -178,14 +211,14 @@ function Web:progressV131(stage,value)
 end
 function Web:showImageV131(data,path,url,cacheHit)
     if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end
-    self.pageMode="image"; self.imageData=data; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view",cacheHit and "Loaded from Image Cache" or "PNG/JPEG converted to HCCI v2"}; self.status=cacheHit and "Image Cache hit" or "Image ready"; self:markV131()
+    self.pageMode="image"; self.imageData=data; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view",self.rawPngBody and "Original PNG retained" or (cacheHit and "Loaded from Image Cache" or "Converted image")}; self.status=cacheHit and "Image Cache hit" or "Image ready"; self:markV131()
 end
 function Web:showNativeImageV131(native,path,url)
     if self.nativeImage and self.nativeImage~=native then nativeFree(self.nativeImage) end
     self.pageMode="image"; self.imageData=nil; self.nativeImage=native; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view","PNG decoded by Tom's GPU"}; self.status="Native PNG ready"; self:markV131()
 end
 function Web:finishNativeImageV131(item,native,path,url)
-    self.nativeTempPaths=self.nativeTempPaths or {}; self.nativeTempPaths[path]=true
+    self.nativeTempPaths=self.nativeTempPaths or {}; if path then self.nativeTempPaths[path]=true end
     if item then
         item.nativeImage=native; item.path=path; item.status="native ready"; webImageStatusLine(self.lines,item.index,item.status); self.job=nil; self:progressV131("Rendering...",1); self:queueNextImageV131()
     else
@@ -193,6 +226,9 @@ function Web:finishNativeImageV131(item,native,path,url)
     end
 end
 function Web:finishImageV131(item,data,cacheKey,alias)
+    if not item and self.rawPngBody then
+        self.job=nil; self.imagePath=nil; self.cacheNotice="Original PNG ready; use SAVE PNG"; self:showImageV131(data,nil,self.url,false); return
+    end
     local saved,err=imageCacheSave(alias,data); if saved and cacheKey~=alias then imageCacheSave(cacheKey,data) end
     local path=saved and imageCachePath(alias) or nil
     if not path then
@@ -210,6 +246,10 @@ function Web:finishImageV131(item,data,cacheKey,alias)
 end
 function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     local kind=self:imageKindV131(url,ctype); if not kind then return false,"unsupported image type" end
+    if not item then
+        self.rawPngBody=kind=="png" and body or nil
+        self.rawPngUrl=kind=="png" and url or nil
+    end
     local alias=self:cacheAliasV131(url,targetW,targetH); local exact=self:cacheKeyV131(url,targetW,targetH,ctype,length); local cached=imageCacheLoad(alias)
     if kind=="png" then
         local nativeOk,native,nativeError=pcall(nativeDecode,body)
@@ -218,6 +258,7 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
             local stageOk,path,stageError=pcall(nativeStage,body,url)
             if not stageOk then stageError=tostring(path or "PNG staging failed"); path=nil end
             if path then self:finishNativeImageV131(item,native,path,url); return true end
+            if not item then self:finishNativeImageV131(item,native,nil,url); return true end
             nativeFree(native); nativeError=stageError
         elseif native then
             nativeFree(native); nativeError="native PNG exceeds the available viewport"
@@ -324,20 +365,24 @@ function Web:queueNextImageV131()
     if #self.pageImages>0 then self.status="Page ready / images loaded"; self:markV131() end
 end
 function Web:initV131(url)
-    self.url=""; self.status="Ready"; self.title="HCC Web"; self.lines={"Enter an HTTP/HTTPS URL and press GO."}; self.links={}; self.linkSelected=1; self.top=1; self.body=""; self.history={}; self.historyIndex=0; self.job=nil; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.nativeImage=nil; self.nativeTempPaths={}; self.imagePath=nil; self.imageIndex=1; self.cacheNotice=""
+    self.url=""; self.status="Ready"; self.title="HCC Web"; self.lines={"Enter an HTTP/HTTPS URL and press GO."}; self.links={}; self.linkSelected=1; self.top=1; self.body=""; self.history={}; self.historyIndex=0; self.job=nil; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.nativeImage=nil; self.nativeTempPaths={}; self.imagePath=nil; self.rawPngBody=nil; self.rawPngUrl=nil; self.imageIndex=1; self.cacheNotice=""
     if type(url)=="string" and url~="" then self:loadV131(url,true) end
 end
 function Web:loadV131(url,record)
     url=webSafeUrl(url); if not url then self.status="Invalid URL"; self.lines={"Only http:// and https:// URLs are allowed."}; self:markV131(); return false end
-    self:cancelJobV131(); if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
+    self:cancelJobV131(); if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.rawPngBody=nil; self.rawPngUrl=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
     if record~=false then for i=#self.history,self.historyIndex+1,-1 do table.remove(self.history,i) end; self.history[#self.history+1]=url; self.historyIndex=#self.history end
-    local kind=self:imageKindV131(url,""); if kind then local tw=max(64,min(576,(self.win and self.win.w or 576)-14)); local th=max(64,min(320,(self.win and self.win.h or 320)-TITLE-115)); local alias=self:cacheAliasV131(url,tw,th); local cached=imageCacheLoad(alias); if cached then self:showImageV131(cached,imageCachePath(alias),url,true); return true end end
+    local kind=self:imageKindV131(url,""); if kind and kind~="png" then local tw=max(64,min(576,(self.win and self.win.w or 576)-14)); local th=max(64,min(320,(self.win and self.win.h or 320)-TITLE-115)); local alias=self:cacheAliasV131(url,tw,th); local cached=imageCacheLoad(alias); if cached then self:showImageV131(cached,imageCachePath(alias),url,true); return true end end
     local ok,err=self:startRequestV131(url,"page",nil,nil,nil); if not ok then self.status=tostring(err); self.lines={tostring(err)}; self:markV131(); return false end; self:markV131(); return true
 end
 function Web:cancel() self:cancelJobV131("Cancelled") end
 function Web:clearCacheV131() local ok,err=imageCacheClear(); self.cacheNotice=ok and "Image cache cleared" or tostring(err); notify(self.cacheNotice,ok and P.success or P.error); self:markV131() end
-function Web:openImageV131() if not self.imageData and not self.nativeImage then return end; local w=openApp("image"); if w and self.imagePath then appCall(w,"loadPath",self.imagePath) elseif self.imageData then notify("Save the image as HCCI first",P.warning) end end
+function Web:openImageV131() if not self.imageData and not self.nativeImage then return end; local w=openApp("image"); if w and self.imagePath then appCall(w,"loadPath",self.imagePath) elseif self.rawPngBody then notify("Save the image as PNG first",P.warning) elseif self.imageData then notify("Save the image before opening it",P.warning) end end
 function Web:saveHcciV131()
+    if self.rawPngBody then
+        saveRawPngDialog(self.rawPngBody,fs.combine(imageStorage,"web_image.png"))
+        return
+    end
     if self.nativeImage and self.imagePath then
         dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
             if b~="Save" then return end
@@ -354,6 +399,14 @@ function Web:saveHcciV131()
     dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,fs.combine(imageStorage,"web_image.hcci"))
 end
 function Web:setWallpaperV131()
+    if self.rawPngBody then
+        local path=imagePathFor("wallpaper_"..tostring(floor(now()*1000))..".png",#self.rawPngBody)
+        local stored,storeError=writeRawPng(path,self.rawPngBody)
+        if not stored then errorBox("Could not save original PNG: "..tostring(storeError)); return end
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
+        if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
+        return
+    end
     if self.nativeImage and self.imagePath then
         local path,storeError=persistNativePng(self.imagePath,self.url)
         if not path then errorBox(storeError); return end
@@ -389,7 +442,7 @@ function Web:drawV131(c)
     if self.pageMode=="image" and (self.imageData or self.nativeImage) then
         local pv=c:clipping(5,82,c.w-10,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border)
         if self.nativeImage then pv:nativeImage(2,2,self.nativeImage,"center") else drawImage(pv,self.imageData,2,2,pv.w-4,pv.h-4,"fit",1,0,0) end
-        button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,self.nativeImage and "SAVE PNG" or "SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
+        button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,(self.rawPngBody or self.nativeImage) and "SAVE PNG" or "SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
     else
         local pw=175; local lw=max(30,c.w-pw-12); local rows=max(1,floor((c.h-111)/12)); self.top=clamp(self.top,1,max(1,#self.lines-rows+1)); local body=c:clipping(5,82,lw,rows*12+2); Widget.panel(body,0,0,body.w,body.h,0xFF050505,P.border)
         for i=0,rows-1 do local line=self.lines[self.top+i]; if not line then break end; body:text(3,3+i*12,line,P.textPrimary) end
