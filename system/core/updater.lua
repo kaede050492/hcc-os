@@ -178,11 +178,23 @@ function Updater:handleHttpFailure(url, reason)
     return true
 end
 
+function Updater:storageBudget(manifest, files)
+    local declared = math.max(1, tonumber(manifest and manifest.installedSize) or 0)
+    local listed = 0
+    for _, file in ipairs(files or {}) do listed = listed + math.max(0, tonumber(file.size) or 0) end
+    local baseline = math.max(declared, listed)
+    -- Keep a bounded staging margin for manifests whose installedSize was
+    -- generated before the latest source files were added. This prevents a
+    -- valid update from stopping near the end while still preserving a hard
+    -- upper bound for the temporary download tree.
+    return baseline + math.max(32768, math.floor(baseline*0.1))
+end
+
 function Updater:spaceAvailable(files, manifest, repairOnly)
     if type(fs.getFreeSpace) ~= "function" then return true end
     local ok, free = pcall(fs.getFreeSpace, "/")
     if not ok or type(free) ~= "number" then return true end
-    local installed = math.max(0, tonumber(manifest and manifest.installedSize) or 0)
+    local installed = self:storageBudget(manifest, files)
     local required
     if repairOnly then
         local maximum = math.max(1, tonumber(manifest and manifest.maxFileSize) or 40000)
@@ -229,7 +241,7 @@ function Updater:stageDownloadedFile(file, body)
     if type(body) ~= "string" then return false, "Downloaded response is not text data" end
     if file.size and #body ~= file.size then return false, "Downloaded size mismatch: "..file.path end
     local maximum = math.max(1, tonumber(self.manifest and self.manifest.maxFileSize) or 40000)
-    local installed = math.max(maximum, tonumber(self.manifest and self.manifest.installedSize) or maximum)
+    local installed = self:storageBudget(self.manifest, self.files)
     if #body > maximum or self.downloadedBytes + #body > installed then
         return false, "Downloaded data exceeds manifest storage limits"
     end
