@@ -190,6 +190,33 @@ function Updater:storageBudget(manifest, files)
     return baseline + math.max(32768, math.floor(baseline*0.1))
 end
 
+function Updater:refreshAppRegistry()
+    if self.appRegistry and type(self.appRegistry.scan)=="function" then
+        local ok,err=pcall(self.appRegistry.scan,self.appRegistry)
+        if not ok then self.logger:warn("Application registry refresh failed: "..tostring(err)) end
+    end
+end
+
+function Updater:pruneRemovedAppPackages()
+    local allowed={}
+    for _,entry in ipairs((self.manifest and self.manifest.files) or {}) do
+        local path=type(entry)=="string" and entry or entry and entry.path
+        local id=type(path)=="string" and path:match("^apps/([^/]+)/")
+        if id then allowed[id]=true end
+    end
+    local root=fs.combine(self.paths.system,"apps")
+    if not fs.exists(root) or not fs.isDir(root) then return end
+    for _,name in ipairs(fs.list(root)) do
+        local path=fs.combine(root,name)
+        if fs.isDir(path) and fs.exists(fs.combine(path,"manifest.lua")) and not allowed[name] then
+            fs.delete(path)
+        elseif not fs.isDir(path) then
+            local id=name:match("^([a-z][a-z0-9_-]*)%.lua$")
+            if id and allowed[id] and fs.exists(fs.combine(root,id,"manifest.lua")) then fs.delete(path) end
+        end
+    end
+end
+
 function Updater:spaceAvailable(files, manifest, repairOnly)
     if type(fs.getFreeSpace) ~= "function" then return true end
     local ok, free = pcall(fs.getFreeSpace, "/")
@@ -342,6 +369,7 @@ function Updater:apply()
         end
         if fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
         self.state.phase, self.state.message = "applied", "Repair applied; restart HCC OS"
+        self:refreshAppRegistry()
         self.logger:info("Repaired "..tostring(#(self.files or {})).." system files")
         return true
     end
@@ -354,6 +382,7 @@ function Updater:apply()
         fs.makeDir(self.paths.system)
         self:moveTree(self.paths.updateTemp, self.paths.system, { ["version.lua"] = true })
         fs.move(versionPath, self.paths.versionFile)
+        self:pruneRemovedAppPackages()
         if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
     end)
     if not ok then
@@ -369,6 +398,7 @@ function Updater:apply()
     end
     self.localManifest = self.manifest
     self.state.phase, self.state.message = "applied", "Update applied; restart HCC OS"
+    self:refreshAppRegistry()
     self.logger:info("Updated to "..tostring(self.manifest.version).." build "..tostring(self.manifest.build))
     return true
 end
@@ -403,6 +433,7 @@ function Updater:rollback(version)
         return false, err
     end
     self.logger:warn("Rolled back HCC OS using "..selected)
+    self:refreshAppRegistry()
     self.state.phase, self.state.message = "rolledback", "Rollback complete; restart HCC OS"
     return true
 end

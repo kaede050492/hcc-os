@@ -22,9 +22,11 @@ return function(E)
         return {shortText(def and def.name or "App",12)}
     end
     local function iconIsOffline(id)
-        if id=="radar" then return not devices.detector end
-        if id=="network" then return #devices.modems==0 end
-        if id=="peripherals" then return #devices.list==0 end
+        local def=OS.registry[id]
+        if def and type(appAvailable)=="function" then
+            local available=appAvailable(def)
+            return not available
+        end
         return false
     end
     local function layout()
@@ -38,9 +40,19 @@ return function(E)
     local function iconRects()
         local l=layout(); local pages=max(1,math.ceil(#OS.order/l.pageSize))
         OS.desktopPage=clamp(OS.desktopPage or 1,1,pages); OS.desktopPageCount=pages
-        local first=(OS.desktopPage-1)*l.pageSize+1; local out={}
+        local first=(OS.desktopPage-1)*l.pageSize+1; local out={}; local used={}; local nextOffset=0
         for offset=0,min(l.pageSize-1,#OS.order-first) do
-            local i=first+offset; local col=offset%l.columns; local row=floor(offset/l.columns)
+            local i=first+offset; local def=OS.registry[OS.order[i]]; local desktop=def and def.desktop or {}
+            local col=desktop.column and clamp(floor(desktop.column)-1,0,l.columns-1) or nil
+            local row=desktop.row and clamp(floor(desktop.row)-1,0,l.rows-1) or nil
+            local key=col and row and (row*l.columns+col) or nil
+            if key and used[key] then col,row,key=nil,nil,nil end
+            if not key then
+                repeat
+                    col=nextOffset%l.columns; row=floor(nextOffset/l.columns); key=row*l.columns+col; nextOffset=nextOffset+1
+                until not used[key]
+            end
+            used[key]=true
             out[#out+1]={id=OS.order[i],index=offset+1,orderIndex=i,
                 r=box(l.gridX+col*l.cellW,l.gridY+row*l.cellH,l.cellW-6,l.cellH-6)}
         end

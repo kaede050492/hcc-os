@@ -40,13 +40,13 @@ local function runInternal(arguments)
     local Config = loadSystem("core/config")
     local Remote = loadSystem("core/remote")
     local Updater = loadSystem("core/updater")
+    local AppRegistry = loadSystem("core/app_registry")
     local Recovery = loadSystem("core/recovery")
     local Widgets = loadSystem("ui/widgets")
     local Icons = loadSystem("ui/icons")
     local Taskbar = loadSystem("ui/taskbar")
     local StartMenu = loadSystem("ui/start_menu")
     local Desktop = loadSystem("ui/desktop")
-    local AppCatalog = loadSystem("apps/app_catalog")
     local logger = Logger.new(paths, 400)
     local config = Config.new(paths, logger)
     config:ensureDirectories()
@@ -72,10 +72,12 @@ local function runInternal(arguments)
         logger:info("Cleaned interrupted update temporary files")
     end
 
+    local appRegistry = AppRegistry.new({root=paths.apps,logger=logger})
     local updater = Updater.new(paths, config, logger, Remote)
+    updater.appRegistry=appRegistry
     local context = {
         paths=paths, config=config, logger=logger, remote=Remote, modules=moduleLoader,
-        updater=updater, localManifest=updater.localManifest,
+        updater=updater, appRegistry=appRegistry, localManifest=updater.localManifest,
         ui={widgets=Widgets, icons=Icons, taskbar=Taskbar, startMenu=StartMenu}
     }
     context.enterRecovery = function(reason)
@@ -87,8 +89,12 @@ local function runInternal(arguments)
         autoUpdatePending=config.data.autoUpdateCheck,
         attachApp=function(environment)
             _G.HCCV15.appMark=environment.mark
-            local app = loadSystem("apps/update_recovery")
-            if type(app.attach) == "function" then app.attach(environment, _G.HCCV15) end
+            local entry=context.appRegistry:entry("updates")
+            if not entry then context.appRegistry:scan(); entry=context.appRegistry:entry("updates") end
+            if entry then
+                local app=loadModule(entry.entryPath)
+                if type(app) == "table" and type(app.attach) == "function" then app.attach(environment, _G.HCCV15) end
+            end
         end,
         check=function() return updater:check() end,
         beginCheck=function() return updater:beginAsyncCheck() end,
@@ -124,7 +130,7 @@ local function runInternal(arguments)
 
     while true do
         local ok, result = xpcall(function()
-            return Desktop.run(context, AppCatalog)
+            return Desktop.run(context, context.appRegistry)
         end, function(reason)
             return traceback(reason, 3)
         end)

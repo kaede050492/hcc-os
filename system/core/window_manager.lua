@@ -148,8 +148,11 @@ return function(E)
         if #OS.windows>=HCC_MAX_WINDOWS then notify("Window limit reached",P.warning); return end
         local area=workspace(); OS.nextWindowId=OS.nextWindowId+1
         local cascade=(OS.nextWindowId-1)%6
+        local available,missing=true,{}
+        if type(appAvailable)=="function" then available,missing=appAvailable(def) end
         local win={id=id,name=def.name,x=area.x+28+cascade*18,y=area.y+18+cascade*14,
-            w=def.defaultWidth,h=def.defaultHeight,dirty=true,commands={},buttons={},windowId=OS.nextWindowId}
+            w=def.defaultWidth,h=def.defaultHeight,dirty=true,commands={},buttons={},windowId=OS.nextWindowId,
+            requirementsMet=available,requirementsMissing=missing}
         fit(win); win.app=setmetatable({win=win,context=E.appContext},{__index=def})
         focus(win); appCall(win,"init",args); logLine("INFO","App start: "..id); return win
     end

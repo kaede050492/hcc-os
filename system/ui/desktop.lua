@@ -44,10 +44,8 @@ local function runDesktop(context,catalog,holder)
   if modules then return modules:loadPath(path, _ENV, path) end
   return loadModule(path)
  end
- AppManager.install(E,catalog,loadApp,BASE)
- if context.config:isFirstBoot() then install(E,"apps/setup.lua",loadSystem) end
- local update=loadSystem("apps/update_recovery.lua")
- if type(update.attach)=="function" then update.attach(E,context.api) end
+ AppManager.install(E,context.appRegistry,loadApp,BASE)
+ if context.config:isFirstBoot() then AppManager.installBoot(E,context.appRegistry,loadApp) end
  install(E,"ui/desktop_view.lua",loadSystem)
  install(E,"ui/taskbar.lua",loadSystem)
  install(E,"ui/start_menu.lua",loadSystem)
