@@ -53,6 +53,17 @@ local function freeSpace(path)
     return ok and value or nil
 end
 
+local function writeBytes(path,body)
+    ensureParent(path)
+    local f,e=fs.open(path,"wb")
+    if not f then return false,e or "file is not writable" end
+    local ok,reason=pcall(f.write,body)
+    local closed,closeError=pcall(f.close)
+    if not ok then return false,tostring(reason) end
+    if not closed then return false,tostring(closeError) end
+    return true
+end
+
 local function updateRoots(paths)
     local roots=paths and paths.updateTemps
     if type(roots)=="table" and #roots>0 then return roots end
@@ -437,28 +448,111 @@ function Updater:stageDownloadedFile(file, body)
             if free>=#body+4096 and (not selectedFree or free>selectedFree) then selected,selectedFree=root,free end
         end
     end
-    if not selected then return false,"No update disk has enough free space for "..file.path end
-    self.stageRoots[file.path]=selected
-    self.stagedBytes[selected]=(self.stagedBytes[selected] or 0)+#body
-    local target = fs.combine(selected, file.path)
-    ensureParent(target)
-    local f, openError = fs.open(target, "w")
-    if not f then return false, openError end
-    local ok, writeError = pcall(f.write, body)
-    f.close()
-    if not ok then return false, writeError end
+    if selected then
+        local target=fs.combine(selected,file.path)
+        local ok,writeError=writeBytes(target,body)
+        if not ok then return false,writeError end
+        self.stageRoots[file.path]=selected
+        self.stagedBytes[selected]=(self.stagedBytes[selected] or 0)+#body
+    else
+        -- A file can be larger than every remaining floppy even when the
+        -- aggregate free space across all floppies is sufficient. Stage
+        -- numbered binary parts and reconstruct the file during apply.
+        local candidates={}
+        for _,root in ipairs(updateRoots(self.paths)) do
+            local free=freeSpace(root)
+            if free=="unlimited" then free=math.huge end
+            if type(free)=="number" then
+                free=free-(self.stagedBytes[root] or 0)-4096
+                if free>0 then candidates[#candidates+1]={root=root,free=free} end
+            end
+        end
+        table.sort(candidates,function(a,b) return a.free>b.free end)
+        local parts={}; local offset=1; local partIndex=0
+        for _,candidate in ipairs(candidates) do
+            if offset>#body then break end
+            local partSize=math.min(#body-offset+1,math.max(0,math.floor(candidate.free)))
+            if partSize>0 then
+                partIndex=partIndex+1
+                local partPath=fs.combine(candidate.root,file.path..".part"..string.format("%03d",partIndex))
+                local ok,writeError=writeBytes(partPath,body:sub(offset,offset+partSize-1))
+                if not ok then
+                    for _,part in ipairs(parts) do if fs.exists(part.path) then pcall(fs.delete,part.path) end end
+                    if fs.exists(partPath) then pcall(fs.delete,partPath) end
+                    return false,writeError
+                end
+                parts[#parts+1]={path=partPath,size=partSize}
+                self.stagedBytes[candidate.root]=(self.stagedBytes[candidate.root] or 0)+partSize
+                offset=offset+partSize
+            end
+        end
+        if offset<=#body then
+            for _,part in ipairs(parts) do if fs.exists(part.path) then pcall(fs.delete,part.path) end end
+            return false,"No combined update disk space remains for "..file.path
+        end
+        self.stageRoots[file.path]={parts=parts,size=#body}
+    end
     self.downloadedBytes = self.downloadedBytes + #body
     return true
 end
 
 function Updater:stagedPath(relative)
     local selected=self.stageRoots and self.stageRoots[relative]
-    if selected then return fs.combine(selected,relative) end
+    if type(selected)=="string" then return fs.combine(selected,relative) end
     for _,root in ipairs(updateRoots(self.paths)) do
         local candidate=fs.combine(root,relative)
         if fs.exists(candidate) then return candidate end
     end
     return fs.combine(self.paths.updateTemp,relative)
+end
+
+function Updater:stagedFileAvailable(relative)
+    local selected=self.stageRoots and self.stageRoots[relative]
+    if type(selected)=="table" and type(selected.parts)=="table" then return #selected.parts>0 end
+    local source=self:stagedPath(relative)
+    return fs.exists(source) and not fs.isDir(source)
+end
+
+function Updater:installStaged(relative,target)
+    local selected=self.stageRoots and self.stageRoots[relative]
+    if type(selected)~="table" or type(selected.parts)~="table" then
+        local source=self:stagedPath(relative)
+        if not fs.exists(source) or fs.isDir(source) then error("Staged update file is missing: "..relative) end
+        transfer(source,target)
+        return
+    end
+    local ok,err=pcall(function()
+        ensureParent(target)
+        local output,openError=fs.open(target,"wb")
+        if not output then error(openError or "staged file is not writable") end
+        local outputClosed=false
+        local success,reason=pcall(function()
+            for _,part in ipairs(selected.parts) do
+                local input,inputError=fs.open(part.path,"rb")
+                if not input then error(inputError or "staged file part is missing") end
+                local readOk,readError=pcall(function()
+                    while true do
+                        local chunk=input.read(32768)
+                        if not chunk or #chunk==0 then break end
+                        output.write(chunk)
+                    end
+                end)
+                pcall(input.close)
+                if not readOk then error(readError) end
+            end
+            local closeOk,closeError=pcall(output.close); outputClosed=closeOk
+            if not closeOk then error(closeError) end
+        end)
+        if not success then
+            if not outputClosed then pcall(output.close) end
+            error(reason)
+        end
+    end)
+    if not ok then
+        if fs.exists(target) then pcall(fs.delete,target) end
+        error(err)
+    end
+    for _,part in ipairs(selected.parts) do if fs.exists(part.path) then pcall(fs.delete,part.path) end end
 end
 
 function Updater:step()
@@ -562,15 +656,14 @@ function Updater:apply()
         if fs.exists(rollbackRoot) then return false, "Previous repair backup requires recovery: "..rollbackRoot end
         local ok, err = pcall(function()
             for _, file in ipairs(self.files or {}) do
-                local source = self:stagedPath(file.path)
                 local target = fs.combine(self.paths.system, file.path)
-                if not fs.exists(source) or fs.isDir(source) then error("Staged repair file is missing: "..file.path) end
+                if not self:stagedFileAvailable(file.path) then error("Staged repair file is missing: "..file.path) end
                 local backup = fs.combine(rollbackRoot, file.path)
                 local hadOriginal = fs.exists(target)
                 local item={path=target, backup=backup, moved=false, installed=false}
                 placed[#placed+1] = item
                 if hadOriginal then transfer(target,backup); item.moved=true end
-                transfer(source, target); item.installed=true
+                self:installStaged(file.path,target); item.installed=true
             end
             for _,root in ipairs(updateRoots(self.paths)) do
                 if fs.exists(root) then fs.delete(root) end
@@ -604,17 +697,15 @@ function Updater:apply()
     local backupOk, backup, backupError = pcall(self.backupCurrent, self, oldVersion)
     if not backupOk or not backup then return false, backupError or backup end
     local ok, err = pcall(function()
-        local versionPath = self:stagedPath("version.lua")
-        if not fs.exists(versionPath) then error("Downloaded version information is missing") end
+        if not self:stagedFileAvailable("version.lua") then error("Downloaded version information is missing") end
         fs.makeDir(self.paths.system)
         for _,file in ipairs(self.files or {}) do
             if file.path ~= "version.lua" then
-                local source=self:stagedPath(file.path)
-                if not fs.exists(source) or fs.isDir(source) then error("Staged update file is missing: "..file.path) end
-                transfer(source,fs.combine(self.paths.system,file.path))
+                if not self:stagedFileAvailable(file.path) then error("Staged update file is missing: "..file.path) end
+                self:installStaged(file.path,fs.combine(self.paths.system,file.path))
             end
         end
-        transfer(versionPath, self.paths.versionFile)
+        self:installStaged("version.lua",self.paths.versionFile)
         self:pruneRemovedAppPackages()
         for _,root in ipairs(updateRoots(self.paths)) do
             if fs.exists(root) then fs.delete(root) end
