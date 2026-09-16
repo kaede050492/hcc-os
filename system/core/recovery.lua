@@ -50,16 +50,21 @@ local function pause()
     return event~="terminate"
 end
 
-local function formEncode(value)
-    value = tostring(value or "")
-    value = value:gsub("([^%w%-_%.~ ])", function(character)
-        return string.format("%%%02X", string.byte(character))
-    end)
-    return value:gsub(" ", "+")
-end
-
 local function trim(value)
     return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function multipartForm(fields)
+    local boundary = "----HCCOSBootLog"..tostring(math.random(100000, 999999))
+    local lines = {}
+    for _, field in ipairs(fields) do
+        lines[#lines+1] = "--"..boundary
+        lines[#lines+1] = "Content-Disposition: form-data; name=\""..field.name.."\""
+        lines[#lines+1] = ""
+        lines[#lines+1] = tostring(field.value or "")
+    end
+    lines[#lines+1] = "--"..boundary.."--"
+    return table.concat(lines, "\r\n").."\r\n", boundary
 end
 
 local function loadModule(path)
@@ -134,9 +139,13 @@ function Recovery:uploadBootLog()
     end
 
     local url = "https://dpaste.org/api/"
-    local body = "content="..formEncode(log).."&format=url&expires=3600"
+    local body, boundary = multipartForm({
+        {name="content", value=log},
+        {name="format", value="url"},
+        {name="expires", value="3600"}
+    })
     local headers = {
-        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["Content-Type"] = "multipart/form-data; boundary="..boundary,
         ["User-Agent"] = "HCC-OS-Recovery/1.5"
     }
     local timerId
