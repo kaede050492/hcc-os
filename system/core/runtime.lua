@@ -27,7 +27,7 @@ function Runtime.new(context)
  local E=setmetatable({context=context},{__index=_ENV})
  E.unpack=table.unpack or unpack
  E.floor,E.min,E.max=math.floor,math.min,math.max
- E.HCC_VERSION="1.5.0"; E.HCC_VERSION_LABEL="HCC OS v1.5.0"
+ E.HCC_VERSION="1.5.1"; E.HCC_VERSION_LABEL="HCC OS v1.5.1"
  E.HCC_CPU="Himantel Core 5 140"; E.HCC_TARGET_W,E.HCC_TARGET_H=576,320
  E.HCC_BLOCKS_X,E.HCC_BLOCKS_Y,E.HCC_PIXELS_PER_BLOCK=9,5,64
  E.HCC_MAX_WINDOWS,E.HCC_MAX_LOGS,E.HCC_MAX_HISTORY=24,400,180

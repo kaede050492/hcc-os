@@ -109,114 +109,70 @@ function Recovery:resetSettings()
     self:message(ok and "Settings reset. User files were kept." or ("Reset failed: "..tostring(err)))
 end
 
+local function runPastebinPut(path)
+    if type(shell)~="table" or type(shell.run)~="function" then return false,"CC:T pastebin program is unavailable" end
+    local output={}
+    local runOk,runResult
+    local current
+    if type(term)=="table" and type(term.current)=="function" then current=term.current() end
+    if current and type(window)=="table" and type(window.create)=="function" and type(term.redirect)=="function" then
+        local captured=window.create(current,1,1,displayWidth(),8,false)
+        local redirected,previous=pcall(term.redirect,captured)
+        if redirected then
+            runOk,runResult=pcall(shell.run,"pastebin","put",path)
+            pcall(term.redirect,previous or current)
+            for line=1,8 do
+                local lineOk,value=pcall(captured.getLine,line)
+                if lineOk and type(value)=="string" and trim(value)~="" then output[#output+1]=trim(value) end
+            end
+        end
+    end
+    if not runOk then runOk,runResult=pcall(shell.run,"pastebin","put",path) end
+    if not runOk then return false,"pastebin command failed: "..tostring(runResult) end
+    local text=table.concat(output,"\n")
+    if runResult==false then return false,text~="" and text or "pastebin put failed" end
+    local pasteUrl=text:match("https?://pastebin%.com/[A-Za-z0-9]+")
+    return true,pasteUrl,text
+end
+
+function Recovery:uploadLogFile(path,label)
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then
+        self:message(label.." is empty. Nothing to upload.")
+        return
+    end
+    local file,readError=fs.open(path,"r")
+    if not file then self:message("Upload failed: "..tostring(readError)); return end
+    local readOk,content=pcall(file.readAll); pcall(file.close)
+    if not readOk or type(content)~="string" or trim(content)=="" then
+        self:message(label.." is empty. Nothing to upload.")
+        return
+    end
+    self:message("Uploading "..label.." with pastebin put...")
+    local uploaded,pasteUrl,output=runPastebinPut(path)
+    if not uploaded then
+        pcall(function() self.context.logger:warn(label.." upload failed: "..tostring(pasteUrl)) end)
+        self:message("Upload failed: "..tostring(pasteUrl))
+        if output and output~="" then self:message(output) end
+        return
+    end
+    if pasteUrl then
+        pcall(function() self.context.logger:info(label.." uploaded: "..pasteUrl) end)
+        self:message(label.." uploaded with pastebin put (link-only; expires according to Pastebin).")
+        self:message(pasteUrl)
+    else
+        self:message(label.." upload finished. Pastebin output:")
+        if output and output~="" then self:message(output) end
+    end
+end
+
 function Recovery:uploadBootLog()
-    local log = ""
-    local readOk, value = pcall(function() return self.context.logger:read() end)
-    if readOk and type(value) == "string" then log = value end
-    if log == "" then
-        self:message("Boot log is empty. Nothing to upload.")
-        return
-    end
-    if #log > 20000 then
-        log = log:sub(1, 6000).."\n...[middle omitted for upload size]...\n"..log:sub(-14000)
-    end
-    if type(http) ~= "table" or type(http.request) ~= "function" then
-        self:message("Upload unavailable: CC:T HTTP request API is disabled.")
-        return
-    end
+    local path=self.context.logger and self.context.logger.path or "/.hccos/logs/boot.log"
+    self:uploadLogFile(path,"Boot Log")
+end
 
-    local url = "https://paste.msk-scripts.de/api/pastes"
-    if type(textutils) ~= "table" or type(textutils.serializeJSON) ~= "function" then
-        self:message("Upload unavailable: JSON encoder is not available.")
-        return
-    end
-    local encodeOk, body = pcall(textutils.serializeJSON, {
-        content=log,
-        title="HCC OS Boot Log",
-        language="plaintext",
-        expiresIn="1h"
-    })
-    if not encodeOk or type(body) ~= "string" or body == "" then
-        self:message("Upload unavailable: request body could not be encoded.")
-        return
-    end
-    local headers = {
-        ["Content-Type"] = "application/json",
-        ["User-Agent"] = "HCC-OS-Recovery/1.5"
-    }
-    local timerId
-    if type(os) == "table" and type(os.startTimer) == "function" then
-        local timerOk, value = pcall(os.startTimer, 15)
-        if timerOk then timerId = value end
-    end
-    if not timerId then
-        self:message("Upload unavailable: timeout timer API is disabled.")
-        return
-    end
-    local requestOk, accepted = pcall(http.request, url, body, headers, false)
-    if not requestOk or accepted == false or accepted == nil then
-        if type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
-        self:message("Upload failed: HTTP request was denied or could not start.")
-        return
-    end
-
-    local response, failure
-    while true do
-        local event, eventUrl, payload = os.pullEventRaw()
-        if event == "terminate" then
-            if timerId and type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
-            self:message("Upload cancelled.")
-            return
-        elseif event == "http_success" and eventUrl == url then
-            response = payload
-            break
-        elseif event == "http_failure" and eventUrl == url then
-            failure = payload
-            break
-        elseif event == "timer" and eventUrl == timerId then
-            failure = "request timed out"
-            break
-        end
-    end
-    if timerId and type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
-    if failure then
-        pcall(function() self.context.logger:warn("Boot log upload failed: "..tostring(failure)) end)
-        self:message("Upload failed: "..tostring(failure))
-        return
-    end
-    if type(response) ~= "table" or type(response.readAll) ~= "function" then
-        self:message("Upload failed: server returned an invalid response.")
-        return
-    end
-    local readResponseOk, responseBody = pcall(response.readAll)
-    if type(response.close) == "function" then pcall(response.close) end
-    if not readResponseOk then
-        self:message("Upload failed: server response could not be read.")
-        return
-    end
-    local responseCode = 200
-    if type(response.getResponseCode) == "function" then
-        local codeOk, code = pcall(response.getResponseCode)
-        if codeOk and tonumber(code) then responseCode = tonumber(code) end
-    end
-    if responseCode < 200 or responseCode >= 300 then
-        self:message("Upload failed: HTTP "..tostring(responseCode)..".")
-        return
-    end
-    local pasteUrl
-    if type(textutils) == "table" and type(textutils.unserializeJSON) == "function" then
-        local decodeOk, result = pcall(textutils.unserializeJSON, responseBody)
-        if decodeOk and type(result) == "table" and type(result.url) == "string" then
-            pasteUrl = trim(result.url)
-        end
-    end
-    if not pasteUrl then
-        self:message("Upload failed: server did not return a paste URL.")
-        return
-    end
-    pcall(function() self.context.logger:info("Boot log uploaded: "..pasteUrl) end)
-    self:message("Boot log uploaded. Unlisted (link-only); expires in 1 hour.")
-    self:message(pasteUrl)
+function Recovery:uploadImageDiagnostics()
+    local root=self.context.paths.logs or "/.hccos/logs"
+    self:uploadLogFile(fs.combine(root,"image-diagnostics.log"),"Image Diagnostics")
 end
 
 function Recovery:run(reason)
@@ -224,7 +180,7 @@ function Recovery:run(reason)
     while true do
         term.clear()
         term.setCursorPos(1, 1)
-        print("HCC OS v1.5.0 - Recovery Mode")
+        print("HCC OS v1.5.1 - Recovery Mode")
         print("Reason:")
         for _, line in ipairs(wrapText(self.reason, displayWidth()-4)) do
             print("  "..line)
@@ -232,7 +188,7 @@ function Recovery:run(reason)
         print("")
         local options = {
             "Start HCC OS", "Rollback", "Repair", "Reset Settings",
-            "Boot Log", "Reinstall", "CC:T Shell", "Upload Boot Log (1h)"
+            "Boot Log", "Reinstall", "CC:T Shell", "Upload Boot Log", "Upload Image Diagnostics"
         }
         for i, label in ipairs(options) do print((i == self.selected and "> " or "  ")..i..". "..label) end
         print("")
@@ -252,7 +208,8 @@ function Recovery:run(reason)
                 elseif self.selected == 5 then print(self.context.logger:read()); if not pause() then return "terminate" end
                 elseif self.selected == 6 then self:reinstall(); if not pause() then return "terminate" end
                 elseif self.selected == 7 then shell.run("/rom/programs/shell"); if not pause() then return "terminate" end
-                elseif self.selected == 8 then self:uploadBootLog(); if not pause() then return "terminate" end end
+                elseif self.selected == 8 then self:uploadBootLog(); if not pause() then return "terminate" end
+                elseif self.selected == 9 then self:uploadImageDiagnostics(); if not pause() then return "terminate" end end
             elseif key == keys.escape then return "start" end
         end
     end

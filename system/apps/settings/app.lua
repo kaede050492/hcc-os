@@ -88,7 +88,7 @@ function Settings:draw(c)
         else
             if i==self.selected then c:filledRectangle(5,y,c.w-10,17,P.panelBackground) end
             c:clipping(9,y+4,c.w*0.6-12,10):text(0,0,f[2],P.textSecondary)
-    local value=(f[3]=="action" and "OPEN") or (f[3]=="restore" and "RUN") or (f[3]=="about" and (HCC_VERSION_LABEL.." / BUILD 1500 / EDITION TOM") or tostring(cfg[f[1]]))
+    local value=(f[3]=="action" and "OPEN") or (f[3]=="restore" and "RUN") or (f[3]=="about" and (HCC_VERSION_LABEL.." / BUILD 1501 / EDITION TOM") or tostring(cfg[f[1]]))
             if f[3]=="about" then
                 local id=cfg.computerId~="" and cfg.computerId or "UNKNOWN"
                 local label=cfg.computerLabel~="" and cfg.computerLabel or "UNLABELLED"

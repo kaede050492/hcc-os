@@ -1,16 +1,16 @@
--- HCC OS v1.5.0 release manifest.
+-- HCC OS v1.5.1 release manifest.
 -- Storage metadata is consumed by the standalone installer and updater.
 
 return {
     product = "HCC OS",
-    version = "1.5.0",
-    build = 1500,
-    revision = "20260916-21",
+    version = "1.5.1",
+    build = 1501,
+    revision = "20260917-00",
     edition = "Tom's Peripherals",
     channel = "stable",
-    installedSize = 440000,
-    startupSize = 4078,
-    maxFileSize = 49152,
+    installedSize = 480000,
+    startupSize = 4580,
+    maxFileSize = 65536,
     files = {
         "manifest.lua",
         "version.lua",
@@ -44,6 +44,8 @@ return {
         "ui/start_menu.lua",
         "lib/hcc/geometry.lua",
         "lib/hcc/tom_gpu.lua",
+        "lib/hcc/qoi_d.lua",
+        "lib/hcc/luaqoi-LICENSE",
         "apps/app_catalog.lua",
         "apps/clock/manifest.lua",
         "apps/clock/app.lua",

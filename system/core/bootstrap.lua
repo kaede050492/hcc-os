@@ -89,7 +89,7 @@ local function runInternal(arguments)
     end
 
     _G.HCCV15 = {
-        version="1.5.0", build=1500, context=context,
+        version="1.5.1", build=1501, context=context,
         autoUpdatePending=config.data.autoUpdateCheck,
         attachApp=function(environment)
             _G.HCCV15.appMark=environment.mark

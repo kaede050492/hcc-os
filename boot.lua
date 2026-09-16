@@ -1,4 +1,4 @@
--- HCC OS v1.5.0 boot entry.
+-- HCC OS v1.5.1 boot entry.
 -- This file is intentionally small; all policy lives in system/core.
 
 local core = "/.hccos/system/core/bootstrap.lua"

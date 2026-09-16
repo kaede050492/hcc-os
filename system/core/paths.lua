@@ -43,7 +43,7 @@ else
 end
 
 return {
-    version = "1.5.0",
+    version = "1.5.1",
     system = "/.hccos/system",
     core = "/.hccos/system/core",
     ui = "/.hccos/system/ui",

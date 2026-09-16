@@ -1,9 +1,22 @@
--- HCC OS v1.5.0 minimal root boot loader.
+-- HCC OS v1.5.1 minimal root boot loader.
 -- The HCC OS implementation remains under /.hccos/system/.
 
 local entrypoint = "/.hccos/system/core/bootstrap.lua"
 local bootLog = "/.hccos/logs/boot.log"
 local arguments = {...}
+
+local function bootLogPaths()
+    local paths={bootLog}
+    local ok,entries=pcall(fs.list,"/")
+    if ok and type(entries)=="table" then
+        for _,name in ipairs(entries) do
+            if tostring(name):match("^disk%d*$") then
+                paths[#paths+1]=fs.combine("/",name,"hccos/logs/boot.log")
+            end
+        end
+    end
+    return paths
+end
 
 local function reasonText(value)
     local text = tostring(value or "")
@@ -22,29 +35,31 @@ end
 
 local function saveBootLog(value)
     local text = reasonText(value):gsub("\r\n", "\n"):gsub("\r", "\n")
-    pcall(function()
-        local directory = "/.hccos/logs"
-        if not fs.exists(directory) then fs.makeDir(directory) end
-        local lines = {}
-        if fs.exists(bootLog) then
-            local old = fs.open(bootLog, "r")
-            if old then
-                local content = old.readAll() or ""
-                old.close()
-                for line in (content.."\n"):gmatch("([^\n]*)\n") do
-                    if line ~= "" then lines[#lines+1] = line end
+    for _,path in ipairs(bootLogPaths()) do
+        pcall(function()
+            local directory = fs.getDir(path)
+            if not fs.exists(directory) then fs.makeDir(directory) end
+            local lines = {}
+            if fs.exists(path) then
+                local old = fs.open(path, "r")
+                if old then
+                    local content = old.readAll() or ""
+                    old.close()
+                    for line in (content.."\n"):gmatch("([^\n]*)\n") do
+                        if line ~= "" then lines[#lines+1] = line end
+                    end
                 end
             end
-        end
-        for line in ("[ERROR] Boot failure: "..text.."\n"):gmatch("([^\n]*)\n") do
-            lines[#lines+1] = line
-        end
-        while #lines > 400 do table.remove(lines, 1) end
-        local file = fs.open(bootLog, "w")
-        if not file then return end
-        pcall(file.write, table.concat(lines, "\n").."\n")
-        pcall(file.close)
-    end)
+            for line in ("[ERROR] Boot failure: "..text.."\n"):gmatch("([^\n]*)\n") do
+                lines[#lines+1] = line
+            end
+            while #lines > 400 do table.remove(lines, 1) end
+            local file = fs.open(path, "w")
+            if not file then return end
+            pcall(file.write, table.concat(lines, "\n").."\n")
+            pcall(file.close)
+        end)
+    end
 end
 
 local function printWrapped(value, width)
@@ -74,7 +89,7 @@ local function loadFile(path)
 end
 
 if not fs.exists(entrypoint) then
-    print("[HCC OS] HCC OS v1.5 core entrypoint is missing:")
+    print("[HCC OS] HCC OS v1.5.1 core entrypoint is missing:")
     print(entrypoint)
     print("Run the standalone installer.lua to install or repair HCC OS.")
     return

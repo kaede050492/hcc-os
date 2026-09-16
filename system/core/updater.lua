@@ -64,6 +64,16 @@ local function writeBytes(path,body)
     return true
 end
 
+local function readBytes(path)
+    local input,openError=fs.open(path,"rb")
+    if not input then return nil,openError or "file is not readable" end
+    local ok,body=pcall(input.readAll)
+    local closed,closeError=pcall(input.close)
+    if not ok then return nil,tostring(body) end
+    if not closed then return nil,tostring(closeError) end
+    return body or ""
+end
+
 local function updateRoots(paths)
     local roots=paths and paths.updateTemps
     if type(roots)=="table" and #roots>0 then return roots end
@@ -126,6 +136,68 @@ local function cleanupBackup(paths,backup)
     end
 end
 
+local function writeBackupIndex(backup,version,locations)
+    local index,indexError=fs.open(fs.combine(backup,"backup.lua"),"w")
+    if not index then return false,indexError or "Could not write rollback index" end
+    local serialized=textutils.serialize({version=tostring(version or "unknown"),locations=locations or {}})
+    local wrote,writeError=pcall(function() index.write(serialized) end)
+    local closed,closeError=pcall(index.close)
+    if not wrote then return false,tostring(writeError) end
+    if not closed then return false,tostring(closeError) end
+    return true
+end
+
+local function restoreParts(parts,target)
+    if type(parts)~="table" then error("Rollback backup has no file parts") end
+    if #parts==0 then
+        local wrote,writeError=writeBytes(target,"")
+        if not wrote then error(writeError or "Rollback target is not writable") end
+        return
+    end
+    ensureParent(target)
+    local output,openError=fs.open(target,"wb")
+    if not output then error(openError or "rollback target is not writable") end
+    local outputClosed=false
+    local ok,err=pcall(function()
+        for _,part in ipairs(parts) do
+            if type(part)~="table" or type(part.path)~="string" or not fs.exists(part.path) or fs.isDir(part.path) then
+                error("Rollback backup part is missing")
+            end
+            local input,inputError=fs.open(part.path,"rb")
+            if not input then error(inputError or "rollback backup part cannot be opened") end
+            local readOk,readError=pcall(function()
+                while true do
+                    local chunk=input.read(32768)
+                    if not chunk or #chunk==0 then break end
+                    output.write(chunk)
+                end
+            end)
+            pcall(input.close)
+            if not readOk then error(readError) end
+        end
+        local closeOk,closeError=pcall(output.close)
+        outputClosed=closeOk
+        if not closeOk then error(closeError) end
+    end)
+    if not ok then
+        if not outputClosed then pcall(output.close) end
+        if fs.exists(target) then pcall(fs.delete,target) end
+        error(err)
+    end
+    for _,part in ipairs(parts) do if fs.exists(part.path) then fs.delete(part.path) end end
+end
+
+local function restoreBackupEntry(source,target)
+    if type(source)=="string" then
+        if not fs.exists(source) or fs.isDir(source) then error("Rollback backup file is missing") end
+        transfer(source,target)
+    elseif type(source)=="table" then
+        restoreParts(source.parts,target)
+    else
+        error("Rollback backup entry is invalid")
+    end
+end
+
 local function restoreBackup(paths,backup,destination)
     local index=readBackupIndex(backup)
     if not index then
@@ -137,11 +209,11 @@ local function restoreBackup(paths,backup,destination)
     local moved={}
     local ok,err=pcall(function()
         for relative,source in pairs(index.locations) do
-            if not safeRelative(relative) or type(source)~="string" or not fs.exists(source) or fs.isDir(source) then
-                error("Rollback backup file is missing: "..tostring(relative))
+            if not safeRelative(relative) or (type(source)~="string" and type(source)~="table") then
+                error("Rollback backup file is invalid: "..tostring(relative))
             end
             local target=fs.combine(destination,relative)
-            transfer(source,target)
+            restoreBackupEntry(source,target)
             moved[#moved+1]={source=source,target=target}
         end
     end)
@@ -204,8 +276,18 @@ function Updater:cleanup()
     -- update state after the user has moved on.
     self.checkJob = nil
     self.downloadJob = nil
+    local restored,restoreError=true,nil
+    if self.lowSpaceBackup and self.lowSpaceLocations then
+        restored,restoreError=self:rollbackLowSpace()
+    end
     for _,root in ipairs(updateRoots(self.paths)) do if fs.exists(root) then pcall(fs.delete,root) end end
-    self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
+    if restored then
+        self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
+    else
+        self.state = {phase="failed", current="", completed=0, total=0, message="Update recovery required: "..tostring(restoreError)}
+        self.logger:error(self.state.message)
+    end
+    self.lowSpaceApply=false
 end
 
 function Updater:check()
@@ -369,7 +451,7 @@ function Updater:spaceAvailable(files, manifest, repairOnly)
         for _, file in ipairs(files) do required = required + math.max(0, tonumber(file.size) or 0) end
     end
     local stageFree=0
-    local stageExternal=false
+    local stageExternal=type(self.paths.storageMounts)=="table" and #self.paths.storageMounts>0
     for _,root in ipairs(updateRoots(self.paths)) do
         local value=freeSpace(root)
         if type(value)=="number" then stageFree=stageFree+value elseif value=="unlimited" then stageFree=math.huge end
@@ -391,6 +473,34 @@ function Updater:spaceAvailable(files, manifest, repairOnly)
     return free >= required + 16384
 end
 
+function Updater:lowSpaceAvailable(files, manifest, repairOnly)
+    if repairOnly or type(fs.getFreeSpace)~="function" then return false end
+    local installed=self:storageBudget(manifest,files)
+    local stageFree=0
+    for _,root in ipairs(updateRoots(self.paths)) do
+        local value=freeSpace(root)
+        if value=="unlimited" then stageFree=math.huge
+        elseif type(value)=="number" then stageFree=stageFree+value end
+    end
+    if type(stageFree)=="number" and stageFree<installed+16384 then return false end
+
+    local currentFiles={}
+    if fs.exists(self.paths.system) then collectFiles(self.paths.system,self.paths.system,"",currentFiles) end
+    local currentSize=treeSize(self.paths.system)
+    -- Low-space apply deletes each staged file before backing up its old
+    -- counterpart.  The staged update therefore becomes reusable capacity;
+    -- account for that capacity instead of requiring stage+backup at once.
+    local backupFree=0
+    for _,root in ipairs(backupRoots(self.paths)) do
+        local value=freeSpace(root)
+        if value=="unlimited" then backupFree=math.huge
+        elseif type(value)=="number" then backupFree=backupFree+value end
+    end
+    local backupRequired=currentSize+(#currentFiles*4096)+16384
+    if type(backupFree)=="number" and backupFree+installed<backupRequired then return false end
+    return true
+end
+
 function Updater:begin(manifest, repairOnly)
     if self.checkJob then return false, "Update check still in progress" end
     if self.downloadJob then return false, "Download already in progress" end
@@ -404,7 +514,9 @@ function Updater:begin(manifest, repairOnly)
         end
         files = selected
     end
-    if not self:spaceAvailable(files, manifest, repairOnly) then
+    local fullSpace=self:spaceAvailable(files, manifest, repairOnly)
+    local lowSpace=not repairOnly and self:lowSpaceAvailable(files,manifest,repairOnly)
+    if not fullSpace and not lowSpace then
         self.state = {phase="blocked", current="", completed=0, total=#files, message="Not enough free space"}
         return false, self.state.message
     end
@@ -424,10 +536,13 @@ function Updater:begin(manifest, repairOnly)
     self.repairOnly = repairOnly == true
     self.fileIndex = 0
     self.downloadedBytes = 0
+    self.lowSpaceApply = lowSpace == true
     self.stageRoots = {}
     self.stagedBytes = {}
     self.cancelled = false
-    self.state = {phase="downloading", current="", completed=0, total=#files, message=#files == 0 and "Nothing to repair" or "Downloading update"}
+    local message=#files == 0 and "Nothing to repair" or "Downloading update"
+    if self.lowSpaceApply then message="Downloading update (low-space install mode)" end
+    self.state = {phase="downloading", current="", completed=0, total=#files, message=message}
     return true
 end
 
@@ -582,6 +697,216 @@ function Updater:step()
     return true
 end
 
+function Updater:readStagedFile(relative)
+    local selected=self.stageRoots and self.stageRoots[relative]
+    if type(selected)=="table" and type(selected.parts)=="table" then
+        local chunks={}
+        for _,part in ipairs(selected.parts) do
+            local body,readError=readBytes(part.path)
+            if not body then return nil,readError or ("Staged file part is missing: "..relative) end
+            chunks[#chunks+1]=body
+        end
+        return table.concat(chunks)
+    end
+    local source=self:stagedPath(relative)
+    if not fs.exists(source) or fs.isDir(source) then return nil,"Staged update file is missing: "..relative end
+    return readBytes(source)
+end
+
+function Updater:discardStagedFile(relative)
+    local selected=self.stageRoots and self.stageRoots[relative]
+    if type(selected)=="table" and type(selected.parts)=="table" then
+        for _,part in ipairs(selected.parts) do
+            if fs.exists(part.path) then fs.delete(part.path) end
+        end
+        return
+    end
+    local source=self:stagedPath(relative)
+    if fs.exists(source) then fs.delete(source) end
+end
+
+function Updater:beginLowSpaceBackup(version)
+    local roots=backupRoots(self.paths)
+    local primary
+    for _,root in ipairs(roots) do
+        local free=freeSpace(root)
+        if free=="unlimited" or free==nil or (type(free)=="number" and free>=8192) then
+            primary=root
+            break
+        end
+    end
+    if not primary then return nil,"No backup disk has enough free space for the rollback index" end
+    local name=safeVersion(version)
+    local function nameExists(value)
+        for _,root in ipairs(backupSearchRoots(self.paths)) do
+            if fs.exists(fs.combine(root,value)) then return true end
+        end
+        return false
+    end
+    if nameExists(name) then name=name.."-"..tostring(os.epoch("utc")) end
+    local destination=fs.combine(primary,name)
+    local created,createError=pcall(function() fs.makeDir(destination) end)
+    if not created then return nil,"Could not create low-space rollback backup: "..tostring(createError) end
+    self.lowSpaceBackup=destination
+    self.lowSpaceLocations={}
+    self.lowSpaceApplied={}
+    local indexed,indexError=writeBackupIndex(destination,version,self.lowSpaceLocations)
+    if not indexed then
+        cleanupBackup(self.paths,destination)
+        self.lowSpaceBackup=nil
+        self.lowSpaceLocations=nil
+        self.lowSpaceApplied=nil
+        return nil,indexError
+    end
+    return destination
+end
+
+function Updater:backupLowSpaceFile(relative)
+    local target=fs.combine(self.paths.system,relative)
+    if not fs.exists(target) then return true end
+    if fs.isDir(target) then error("Cannot back up directory: "..relative) end
+    local roots=backupRoots(self.paths)
+    local name=backupName(self.lowSpaceBackup)
+    local size=math.max(0,tonumber(fs.getSize(target)) or 0)
+    local selected,selectedFree
+    for _,root in ipairs(roots) do
+        local free=freeSpace(root)
+        if free=="unlimited" or free==nil then free=math.huge end
+        if type(free)=="number" and free>=size+4096 and (not selectedFree or free>selectedFree) then
+            selected,selectedFree=root,free
+        end
+    end
+    if selected then
+        local destination=fs.combine(selected,name.."/parts/"..relative)
+        ensureParent(destination)
+        transfer(target,destination)
+        self.lowSpaceLocations[relative]=destination
+    else
+        -- A backup file can be larger than every remaining disk.  Keep the
+        -- old file intact until all numbered parts have been written, then
+        -- remove it and record the distributed representation in the index.
+        local body,readError=readBytes(target)
+        if not body then error(readError or ("Could not read file for backup: "..relative)) end
+        local candidates={}
+        for _,root in ipairs(roots) do
+            local free=freeSpace(root)
+            if free=="unlimited" or free==nil then free=math.huge end
+            if type(free)=="number" then
+                free=free-4096
+                if free>0 then candidates[#candidates+1]={root=root,free=free} end
+            end
+        end
+        table.sort(candidates,function(a,b) return a.free>b.free end)
+        local parts={}
+        local offset=1
+        local partIndex=0
+        for _,candidate in ipairs(candidates) do
+            if offset>#body then break end
+            local partSize=math.min(#body-offset+1,math.max(0,math.floor(candidate.free)))
+            if partSize>0 then
+                partIndex=partIndex+1
+                local partPath=fs.combine(candidate.root,name.."/parts/"..relative..".part"..string.format("%03d",partIndex))
+                local wrote,writeError=writeBytes(partPath,body:sub(offset,offset+partSize-1))
+                if not wrote then
+                    for _,part in ipairs(parts) do if fs.exists(part.path) then pcall(fs.delete,part.path) end end
+                    if fs.exists(partPath) then pcall(fs.delete,partPath) end
+                    error(writeError or "Could not write distributed rollback part")
+                end
+                parts[#parts+1]={path=partPath,size=partSize}
+                offset=offset+partSize
+            end
+        end
+        if offset<=#body then
+            for _,part in ipairs(parts) do if fs.exists(part.path) then pcall(fs.delete,part.path) end end
+            error("No combined backup disk space remains for "..relative)
+        end
+        self.lowSpaceLocations[relative]={parts=parts,size=#body}
+        fs.delete(target)
+    end
+    local indexed,indexError=writeBackupIndex(self.lowSpaceBackup,self.localManifest and self.localManifest.version,self.lowSpaceLocations)
+    if not indexed then error(indexError) end
+    return true
+end
+
+function Updater:rollbackLowSpace()
+    if not self.lowSpaceBackup then return true end
+    local restored=true
+    local restoreError
+    for _,target in pairs(self.lowSpaceApplied or {}) do
+        if fs.exists(target) then
+            local ok,err=pcall(fs.delete,target)
+            if not ok then restored=false; restoreError=err end
+        end
+    end
+    for relative,source in pairs(self.lowSpaceLocations or {}) do
+        local target=fs.combine(self.paths.system,relative)
+        if fs.exists(target) then pcall(fs.delete,target) end
+        local ok,err=pcall(function() restoreBackupEntry(source,target) end)
+        if not ok then restored=false; restoreError=err end
+    end
+    if restored then
+        cleanupBackup(self.paths,self.lowSpaceBackup)
+        self.lowSpaceBackup=nil
+        self.lowSpaceLocations=nil
+        self.lowSpaceApplied=nil
+        return true
+    end
+    return false,restoreError
+end
+
+function Updater:applyLowSpace()
+    if self.state.phase~="ready" then return false,"update is not ready" end
+    if not self:stagedFileAvailable("version.lua") then return false,"Downloaded version information is missing" end
+    local oldVersion=self.localManifest and self.localManifest.version or "previous"
+    local backup,backupError=self:beginLowSpaceBackup(oldVersion)
+    if not backup then return false,backupError end
+    local ok,err=pcall(function()
+        fs.makeDir(self.paths.system)
+        for _,file in ipairs(self.files or {}) do
+            if not self:stagedFileAvailable(file.path) then error("Staged update file is missing: "..file.path) end
+            local body,readError=self:readStagedFile(file.path)
+            if not body then error(readError or ("Could not read staged update file: "..file.path)) end
+            if file.size and #body~=file.size then error("Downloaded size mismatch: "..file.path) end
+            local maximum=math.max(1,tonumber(self.manifest and self.manifest.maxFileSize) or 40000)
+            if #body>maximum then error("Downloaded file exceeds the manifest limit: "..file.path) end
+            -- Releasing the new file before moving the old one is what makes
+            -- this transaction fit on the same floppy set.
+            self:discardStagedFile(file.path)
+            local target=fs.combine(self.paths.system,file.path)
+            if fs.exists(target) then self:backupLowSpaceFile(file.path) end
+            self.lowSpaceApplied[file.path]=target
+            local written,writeError=writeBytes(target,body)
+            if not written then error(writeError or ("Could not install update file: "..file.path)) end
+        end
+        -- Removed app folders are deliberately retained in this mode.  They
+        -- are harmless, and retaining them keeps rollback complete when the
+        -- disk set is too tight for a second full directory backup.
+        for _,root in ipairs(updateRoots(self.paths)) do
+            if fs.exists(root) then fs.delete(root) end
+        end
+    end)
+    if not ok then
+        local restored,restoreError=self:rollbackLowSpace()
+        for _,root in ipairs(updateRoots(self.paths)) do
+            if fs.exists(root) then pcall(fs.delete,root) end
+        end
+        self.lowSpaceApply=false
+        self.state.phase="failed"
+        self.state.message=(restored and "Update rolled back: " or "Update recovery required; backup kept at "..tostring(backup)..": ")..tostring(err)
+        self.logger:error(self.state.message)
+        return false,err
+    end
+    self.localManifest=self.manifest
+    self.lowSpaceBackup=nil
+    self.lowSpaceLocations=nil
+    self.lowSpaceApplied=nil
+    self.lowSpaceApply=false
+    self.state.phase,self.state.message="applied","Update applied; restart HCC OS"
+    self:refreshAppRegistry()
+    self.logger:info("Updated to "..tostring(self.manifest.version).." build "..tostring(self.manifest.build).." using low-space apply")
+    return true
+end
+
 function Updater:backupCurrent(version)
     local roots=backupRoots(self.paths)
     local primary=roots[1] or self.paths.backups or "/.hccos/backups"
@@ -617,12 +942,8 @@ function Updater:backupCurrent(version)
             moved[#moved+1]={source=file.source,target=target}
             locations[file.relative]=target
         end
-        local index=fs.open(fs.combine(destination,"backup.lua"),"w")
-        if not index then error("Could not write distributed rollback index") end
-        local serialized=textutils.serialize({version=tostring(version or "unknown"),locations=locations})
-        local wrote=pcall(index.write,serialized)
-        index.close()
-        if not wrote then error("Could not write distributed rollback index") end
+        local indexed,indexError=writeBackupIndex(destination,version,locations)
+        if not indexed then error(indexError) end
     end)
     if not ok then
         for index=#moved,1,-1 do
@@ -646,6 +967,7 @@ end
 
 function Updater:apply()
     if self.state.phase ~= "ready" then return false, "update is not ready" end
+    if self.lowSpaceApply then return self:applyLowSpace() end
     if self.repairOnly then
         local placed = {}
         local rollbackRoot = self.paths.temp.."/repair-rollback"
@@ -691,7 +1013,14 @@ function Updater:apply()
     end
     local oldVersion = self.localManifest and self.localManifest.version or "previous"
     local backupOk, backup, backupError = pcall(self.backupCurrent, self, oldVersion)
-    if not backupOk or not backup then return false, backupError or backup end
+    if not backupOk or not backup then
+        -- A full backup can fail because no individual floppy can hold the
+        -- next file even though the staged update can be released one file at
+        -- a time.  Retry with the transactional low-space installer while the
+        -- downloaded files are still intact.
+        self.lowSpaceApply=true
+        return self:applyLowSpace()
+    end
     local ok, err = pcall(function()
         if not self:stagedFileAvailable("version.lua") then error("Downloaded version information is missing") end
         fs.makeDir(self.paths.system)

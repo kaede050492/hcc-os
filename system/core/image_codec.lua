@@ -8,8 +8,35 @@ return function(E)
 -- also accepted as {rle={{color=...,count=...},...}} and is expanded safely.
 local storagePaths=E.paths or {}
 local imageDir=storagePaths.images or "/.hccos/images"
+local imageDiagnosticPath=fs.combine(storagePaths.logs or "/.hccos/logs","image-diagnostics.log")
 local imageCache={}
 local imageToStored
+local function diagnosticTrace(value)
+    local message=tostring(value or "unknown image error")
+    if type(debug)=="table" and type(debug.traceback)=="function" then
+        local ok,trace=pcall(debug.traceback,message,3)
+        if ok and type(trace)=="string" and trace~="" then message=trace end
+    end
+    return message
+end
+local function imageDiagnostic(level,stage,message)
+    local line="["..tostring(level or "INFO").."] IMAGE "..tostring(stage or "unknown").." "..tostring(message or "")
+    if #line>4000 then line=line:sub(1,4000).."..." end
+    pcall(function()
+        local dir=fs.getDir(imageDiagnosticPath)
+        if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+        if fs.exists(imageDiagnosticPath) and fs.getSize(imageDiagnosticPath)>49152 then
+            local old=fs.open(imageDiagnosticPath,"r")
+            local content=old and old.readAll() or ""
+            if old then old.close() end
+            local compact=fs.open(imageDiagnosticPath,"w")
+            if compact then compact.write(content:sub(-24576)); compact.close() end
+        end
+        local file=fs.open(imageDiagnosticPath,"a")
+        if file then file.write(line.."\n"); file.close() end
+    end)
+    if type(logLine)=="function" then pcall(logLine,level or "INFO",line) end
+end
 local function imageColor(value)
     if type(value)=="number" and finite(value) then return floor(value)%4294967296 end
     if type(value)=="string" then
@@ -45,10 +72,21 @@ local function imageNormalize(raw)
     return {version=raw.version==2 and 2 or 1,width=w,height=h,pixels=pixels,palette=#palette>0 and palette or nil,rle=raw.version==2 and raw.rle or nil}
 end
 local function imageRead(path)
-    if type(path)~="string" or path=="" or fs.isDir(path) then return nil,"invalid image path" end
+    if type(path)~="string" or path=="" or fs.isDir(path) then
+        imageDiagnostic("ERROR","read", "invalid image path: "..tostring(path))
+        return nil,"invalid image path"
+    end
     local ok,raw=pcall(function() return textutils.unserialize(readFile(path,4*1024*1024)) end)
-    if not ok then return nil,tostring(raw) end
-    return imageNormalize(raw)
+    if not ok then
+        imageDiagnostic("ERROR","read",path.." read/parse failed: "..diagnosticTrace(raw))
+        return nil,tostring(raw)
+    end
+    local normalized,normalizeError=imageNormalize(raw)
+    if not normalized then
+        imageDiagnostic("ERROR","normalize",path..": "..tostring(normalizeError))
+        return nil,normalizeError
+    end
+    return normalized
 end
 local function imageWrite(path,data)
     if type(path)~="string" or path=="" or not data then return nil,"invalid image path" end
@@ -64,7 +102,7 @@ local function imageList()
     if not fs.exists(imageDir) or not fs.isDir(imageDir) then return {} end
     local out={}; for _,name in ipairs(fs.list(imageDir)) do
         local path=fs.combine(imageDir,name); local lower=name:lower()
-        if not fs.isDir(path) and (lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.hcci$")) then out[#out+1]=path end
+        if not fs.isDir(path) and (lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.hcci$") or lower:match("%.qoi$")) then out[#out+1]=path end
     end
     table.sort(out); return out
 end
@@ -106,6 +144,7 @@ local function drawImage(c,data,x,y,w,h,mode,zoom,offsetX,offsetY)
 end
 local wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
 local nativeWallpaperLoad
+local imageLoadQoi
 local function clearWallpaperCache()
     if wallpaperCache.data and wallpaperCache.data.native and type(Driver)=="table" and type(Driver.freeNativeImage)=="function" then Driver.freeNativeImage(wallpaperCache.data) end
     wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
@@ -115,7 +154,14 @@ local function getWallpaper()
     local key=cfg.wallpaperPath
     if wallpaperCache.path==key and wallpaperCache.data then return wallpaperCache.data end
     local data,err
-    if cfg.wallpaperPath:lower():match("%.png$") and nativeWallpaperLoad then data,err=nativeWallpaperLoad(cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK) else data,err=imageRead(cfg.wallpaperPath) end
+    local wallpaperPath=cfg.wallpaperPath:lower()
+    if wallpaperPath:match("%.png$") and nativeWallpaperLoad then
+        data,err=nativeWallpaperLoad(cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK)
+    elseif wallpaperPath:match("%.qoi$") and imageLoadQoi then
+        data,err=imageLoadQoi(cfg.wallpaperPath,Driver.w,Driver.h-TASK)
+    else
+        data,err=imageRead(cfg.wallpaperPath)
+    end
     if not data then logLine("WARN","Wallpaper unavailable: "..tostring(err)); cfg.wallpaperMode="black"; clearWallpaperCache(); return nil end
     wallpaperCache.path=key; wallpaperCache.data=data; wallpaperCache.renderKey=nil; wallpaperCache.commands=nil; return data
 end
@@ -133,6 +179,7 @@ end
 -- CC:Tweaked does not expose a PNG/JPEG decoder.  The following decoder is
 -- deliberately bounded and is driven by ImagePipeline coroutines below.
 local pngDecode,jpegDecode,imagePrepare
+local qoiDecoder,qoiLoadAttempted
 local imageCacheSave,imageCacheLoad,imageCacheClear,imageCachePath
 do
 local bit32lib=bit32
@@ -692,13 +739,96 @@ function imageCacheClear()
     local ok,err=pcall(function() for _,name in ipairs(fs.list(imageCacheDir)) do local path=fs.combine(imageCacheDir,name); if not fs.isDir(path) then fs.delete(path) end end end); return ok,err
 end
 local function imageDecodeNativePng(body)
-    if type(Driver)~="table" or type(Driver.decodePng)~="function" then return nil,"Tom's GPU native PNG backend unavailable" end
-    return Driver.decodePng(body)
+    if type(Driver)~="table" or type(Driver.decodePng)~="function" then
+        imageDiagnostic("WARN","native_png", "Tom's GPU decodePng backend unavailable; fallback=pure_lua_png")
+        return nil,"Tom's GPU native PNG backend unavailable"
+    end
+    local ok,native,nativeError=pcall(Driver.decodePng,body)
+    if not ok then
+        imageDiagnostic("WARN","native_png", "Tom's GPU decodePng failed; fallback=pure_lua_png: "..diagnosticTrace(native))
+        return nil,tostring(native)
+    end
+    if not native then
+        imageDiagnostic("WARN","native_png", "Tom's GPU decodePng rejected image; fallback=pure_lua_png: "..tostring(nativeError or "unknown native decoder error"))
+        return nil,tostring(nativeError or "native PNG decode failed")
+    end
+    imageDiagnostic("INFO","native_png", "Tom's GPU decodePng succeeded")
+    return native,nativeError
+end
+
+local function qoiSignature(body)
+    return type(body)=="string" and body:sub(1,4)=="qoif"
+end
+
+local function qoiDimensions(body)
+    if not qoiSignature(body) or #body<14 then return nil,"invalid or truncated QOI header" end
+    local function u32(offset)
+        local a,b,c,d=body:byte(offset,offset+3)
+        if not a or not b or not c or not d then return nil end
+        return a*16777216+b*65536+c*256+d
+    end
+    local width,height=u32(5),u32(9); local channels=body:byte(13)
+    if not width or not height or (channels~=3 and channels~=4) then return nil,"invalid QOI header" end
+    if width<1 or height<1 or width>1024 or height>768 or width*height>262144 then return nil,"QOI dimensions are unsafe" end
+    return width,height
+end
+
+local function loadQoiDecoder()
+    if qoiLoadAttempted then return qoiDecoder end
+    qoiLoadAttempted=true
+    local modules=E.modules
+    if modules and type(modules.load)=="function" then
+        local ok,value=pcall(modules.load,modules,"hcc.qoi_d")
+        if ok and type(value)=="table" and type(value.decode)=="function" then qoiDecoder=value end
+    end
+    if not qoiDecoder then imageDiagnostic("ERROR","qoi.loader","luaqoi qoi_d decoder is unavailable") end
+    return qoiDecoder
+end
+
+local function normalizeQoi(decoded)
+    if type(decoded)~="table" then return nil,"luaqoi returned no image table" end
+    local width=tonumber(decoded.width); local height=tonumber(decoded.height)
+    if not width or not height or width<1 or height<1 or width>1024 or height>768 or width*height>262144 then return nil,"QOI dimensions are unsafe" end
+    local rgba=decoded.channels=="RGBA" and decoded.has_alpha==true
+    local pixels={}
+    for y=1,height do
+        local row=decoded.pixels and decoded.pixels[y]
+        if type(row)~="table" then return nil,"luaqoi returned incomplete pixel rows" end
+        for x=1,width do
+            local value=tonumber(row[x]); if not value then return nil,"luaqoi returned an invalid pixel" end
+            if rgba then
+                local r=floor(value/16777216)%256; local g=floor(value/65536)%256; local b=floor(value/256)%256; local a=value%256
+                pixels[(y-1)*width+x]=a*16777216+r*65536+g*256+b
+            else
+                pixels[(y-1)*width+x]=0xFF000000+value%16777216
+            end
+        end
+    end
+    return imageNormalize({version=1,width=width,height=height,pixels=pixels})
+end
+
+local function imageDecodeQoi(body)
+    if type(body)~="string" or #body==0 then return nil,"empty QOI data" end
+    local qoiWidth,qoiHeight=qoiDimensions(body)
+    if not qoiWidth then imageDiagnostic("ERROR","qoi.header",tostring(qoiHeight)); return nil,qoiHeight end
+    local decoder=loadQoiDecoder(); if not decoder then return nil,"luaqoi decoder unavailable" end
+    imageDiagnostic("INFO","qoi.decode","luaqoi qoid.decode({data=binary})")
+    local ok,decoded=pcall(decoder.decode,{data=body})
+    if not ok then imageDiagnostic("ERROR","qoi.decode",diagnosticTrace(decoded)); return nil,tostring(decoded) end
+    local normalized,err=normalizeQoi(decoded)
+    if not normalized then imageDiagnostic("ERROR","qoi.normalize",tostring(err)); return nil,err end
+    return normalized
 end
 local function imageLoadNativePng(path,limit)
-    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid PNG path" end
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then
+        imageDiagnostic("ERROR","native_load", "invalid PNG path: "..tostring(path))
+        return nil,"invalid PNG path"
+    end
     local ok,body=pcall(readFile,path,limit or cfg.maxImageDownload)
-    if not ok then return nil,tostring(body) end
+    if not ok then
+        imageDiagnostic("ERROR","native_load",path.." read failed: "..diagnosticTrace(body))
+        return nil,tostring(body)
+    end
     return imageDecodeNativePng(body)
 end
 local function imageStageNativePng(body,key)
@@ -737,18 +867,56 @@ local function imagePersistNativePng(path,key)
 end
 nativeWallpaperLoad=function(path,mode,targetW,targetH)
     local ok,body=pcall(readFile,path,cfg.maxImageDownload)
-    if not ok then return nil,tostring(body) end
+    if not ok then
+        imageDiagnostic("ERROR","wallpaper.read",path..": "..diagnosticTrace(body))
+        return nil,tostring(body)
+    end
+    imageDiagnostic("INFO","wallpaper.native",path.." trying Tom's GPU PNG decoder")
     local native,nativeError=imageDecodeNativePng(body)
     if native and mode=="center" and native.width<=targetW and native.height<=targetH then return native end
-    if native then imageFreeNativePng(native) end
-    local decoded,decodeError=pcall(pngDecode,body)
-    if not decoded then return nil,tostring(nativeError or decodeError) end
-    local data=imagePrepare(decodeError,targetW,targetH)
-    if not data then return nil,"PNG wallpaper conversion failed" end
+    if native then
+        imageDiagnostic("INFO","wallpaper.native", "native image released; fallback=pure_lua_png for resize/fit")
+        imageFreeNativePng(native)
+    else
+        imageDiagnostic("WARN","wallpaper.native", "native decoder unavailable/failed; fallback=pure_lua_png: "..tostring(nativeError or "unknown error"))
+    end
+    local decodeOk,decoded=pcall(pngDecode,body)
+    if not decodeOk then
+        imageDiagnostic("ERROR","wallpaper.png_decode",diagnosticTrace(decoded))
+        return nil,tostring(decoded)
+    end
+    local prepareOk,data=pcall(imagePrepare,decoded,targetW,targetH)
+    if not prepareOk then
+        imageDiagnostic("ERROR","wallpaper.resize",diagnosticTrace(data))
+        return nil,tostring(data)
+    end
+    if not data then
+        imageDiagnostic("ERROR","wallpaper.resize", "PNG wallpaper conversion returned no image")
+        return nil,"PNG wallpaper conversion failed"
+    end
+    imageDiagnostic("INFO","wallpaper.fallback", "pure Lua PNG decode/resize succeeded")
     return data
 end
+
+imageLoadQoi=function(path,targetW,targetH,progress)
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid QOI path" end
+    if cfg.maxImageDownload and fs.getSize(path)>cfg.maxImageDownload then return nil,"QOI file exceeds configured size limit" end
+    local decoder=loadQoiDecoder(); if not decoder then return nil,"luaqoi decoder unavailable" end
+    imageDiagnostic("INFO","qoi.load","luaqoi qoid.decode({file=path}) path="..path)
+    local ok,decoded=pcall(decoder.decode,{file=path})
+    if not ok then imageDiagnostic("ERROR","qoi.load",path..": "..diagnosticTrace(decoded)); return nil,tostring(decoded) end
+    local data,err=normalizeQoi(decoded); if not data then imageDiagnostic("ERROR","qoi.normalize",path..": "..tostring(err)); return nil,err end
+    if targetW and targetH then
+        local preparedOk,prepared=pcall(imagePrepare,data,targetW,targetH,progress)
+        if not preparedOk then imageDiagnostic("ERROR","qoi.resize",diagnosticTrace(prepared)); return nil,tostring(prepared) end
+        data=prepared
+    end
+    return data
+end
+
 function imagePrepare(data,targetW,targetH,progress)
-    targetW=max(1,min(576,floor(targetW or 576))); targetH=max(1,min(320,floor(targetH or 320))); local candidates={{1,"16"},{0.8333,"12"},{0.6667,"8"},{0.5,"8"}}; local lastData,lastStored,lastSize
+    local displayW=type(Driver)=="table" and tonumber(Driver.w) or 576; local displayH=type(Driver)=="table" and tonumber(Driver.h) or 360
+    targetW=max(1,min(1024,floor(targetW or displayW))); targetH=max(1,min(768,floor(targetH or displayH-40))); local candidates={{1,"16"},{0.8333,"12"},{0.6667,"8"},{0.5,"8"}}; local lastData,lastStored,lastSize
     for _,candidate in ipairs(candidates) do
         local scale,colors=candidate[1],tonumber(candidate[2]); local resized=imageResize(data,max(1,floor(targetW*scale)),max(1,floor(targetH*scale)),function(p) if progress then progress("Resizing...",p) end end)
         local quantized,stored=imageQuantize(resized,colors,function(p) if progress then progress("Quantizing "..colors.." colors...",p) end end); local size=#textutils.serialize(stored); lastData,lastStored,lastSize=quantized,stored,size
@@ -758,7 +926,8 @@ function imagePrepare(data,targetW,targetH,progress)
     return lastData,lastStored,lastSize
 end
 end
-E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.imageResize=imageResize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageHttpCacheLoad=imageHttpCacheLoad; E.imageHttpCacheSave=imageHttpCacheSave; E.imageHttpCacheClear=imageHttpCacheClear; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
+E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.imageResize=imageResize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageDecodeQoi=imageDecodeQoi; E.imageLoadQoi=imageLoadQoi; E.qoiSignature=qoiSignature; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageHttpCacheLoad=imageHttpCacheLoad; E.imageHttpCacheSave=imageHttpCacheSave; E.imageHttpCacheClear=imageHttpCacheClear; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
+E.imageDiagnostic=imageDiagnostic; E.imageDiagnosticsPath=imageDiagnosticPath
 E.resetWallpaperCache=clearWallpaperCache
 
 end
