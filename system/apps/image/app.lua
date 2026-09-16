@@ -270,7 +270,7 @@ function ImageViewer:startImportBody(job,body)
     end
     local co=coroutine.create(function()
         local decoded
-        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG...",p) end)
+        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG...",p) end,availableW,availableH)
         elseif kind=="jpeg" then decoded=jpegDecode(body,function(p) coroutine.yield("Decoding JPEG...",p) end)
         elseif kind=="qoi" then coroutine.yield("Decoding QOI...",0.2); local qoiError; decoded,qoiError=imageDecodeQoi(body); if not decoded then error(qoiError or "invalid QOI image") end
         else

@@ -302,11 +302,13 @@ local lengthExtra={0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0}
 local distanceBase={1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577}
 local distanceExtra={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13}
 local function inflateRaw(data,limit,yieldFn)
-    local reader=newBitReader(data); local output={}; local size=0; local final=false
+    local reader=newBitReader(data); local history={}; local chunks={}; local chunk={}; local chunkSize=0; local size=0; local final=false
     local function put(value)
         if type(value)~="number" then error("invalid DEFLATE byte") end
-        size=size+1; if size>limit then error("decoded image exceeds safety limit") end
-        output[size]=string.char(value%256)
+        value=value%256; size=size+1; if size>limit then error("decoded image exceeds safety limit") end
+        history[(size-1)%32768+1]=value
+        chunkSize=chunkSize+1; chunk[chunkSize]=string.char(value)
+        if chunkSize>=4096 then chunks[#chunks+1]=table.concat(chunk); chunk={}; chunkSize=0 end
         if yieldFn and size%4096==0 then yieldFn(size) end
     end
     while not final do
@@ -358,17 +360,18 @@ local function inflateRaw(data,limit,yieldFn)
                     local distanceBaseValue,distanceBits=distanceBase[ds+1],distanceExtra[ds+1]
                     if type(distanceBaseValue)~="number" or type(distanceBits)~="number" then error("invalid DEFLATE distance") end
                     local distance=distanceBaseValue+deflateBits(reader,distanceBits,"truncated DEFLATE distance"); if distance>size then error("DEFLATE distance outside output") end
-                    for _=1,length do local from=size-distance+1; local byte=output[from]; if type(byte)~="string" then error("invalid DEFLATE back-reference") end; put(byte:byte()) end
+                    for _=1,length do local from=(size-distance)%32768+1; local byte=history[from]; if type(byte)~="number" then error("invalid DEFLATE back-reference") end; put(byte) end
                 else error("invalid DEFLATE length") end
             end
         end
     end
-    return table.concat(output)
+    if chunkSize>0 then chunks[#chunks+1]=table.concat(chunk) end
+    return table.concat(chunks)
 end
 local function be16(s,p) local a,b=s:byte(p,p+1); if not a or not b then error("truncated image") end; return a*256+b end
 local function be32(s,p) local a,b,c,d=s:byte(p,p+3); if not d then error("truncated image") end; return ((a*256+b)*256+c)*256+d end
 local function paeth(a,b,c) local p=a+b-c; local pa=math.abs(p-a); local pb=math.abs(p-b); local pc=math.abs(p-c); return pa<=pb and pa<=pc and a or (pb<=pc and b or c) end
-function pngDecode(body,yieldFn)
+function pngDecode(body,yieldFn,targetW,targetH)
     if type(body)~="string" then error("invalid PNG data") end
     if body:sub(1,8)~=string.char(137,80,78,71,13,10,26,10) then error("not a PNG") end
     local pos=9; local width,height,depth,colorType; local palette,transparency={},{ }; local idat={}; local interlace
@@ -391,35 +394,50 @@ function pngDecode(body,yieldFn)
     if not hasIHDR then error("PNG has no IHDR") end
     if not hasIDAT then error("PNG has no IDAT data") end
     if not hasIEND then error("PNG is missing IEND") end
-    if not width or not height or width<1 or height<1 or width>1024 or height>768 or width*height>262144 then error("PNG dimensions are unsafe") end
+    if not width or not height or width<1 or height<1 or width>8192 or height>8192 or width*height>8388608 then error("PNG dimensions are unsafe") end
     if type(depth)~="number" or type(colorType)~="number" or type(interlace)~="number" then error("truncated PNG IHDR") end
     if interlace~=0 then error("interlaced PNG is not supported") end
     local channels=({[0]=1,[2]=3,[3]=1,[4]=2,[6]=4})[colorType]; if not channels then error("unsupported PNG color type") end
     if depth~=1 and depth~=2 and depth~=4 and depth~=8 and depth~=16 then error("unsupported PNG bit depth") end
     if colorType==3 and #palette==0 then error("indexed PNG has no palette") end
-    local rowBytes=math.ceil(width*channels*depth/8); local bpp=max(1,math.ceil(channels*depth/8)); local compressed=table.concat(idat); local cmf,flg=compressed:byte(1,2)
+    local rowBytes=math.ceil(width*channels*depth/8); local bpp=max(1,math.ceil(channels*depth/8)); local expectedRaw=height*(rowBytes+1)
+    if expectedRaw<1 or expectedRaw>33554432 then error("PNG decoded data is unsafe") end
+    local compressed=table.concat(idat); local cmf,flg=compressed:byte(1,2)
     if #compressed<6 or not cmf or not flg or cmf%16~=8 or (cmf*256+flg)%31~=0 then error("invalid PNG zlib stream") end
-    local raw=inflateRaw(compressed:sub(3,#compressed-4),max(1024*1024,width*(rowBytes+1)*height+64),yieldFn)
+    local raw=inflateRaw(compressed:sub(3,#compressed-4),expectedRaw+64,function(size) if yieldFn then yieldFn(clamp(size/expectedRaw,0,1)) end end)
     if #raw<height*(rowBytes+1) then error("PNG scanlines are truncated") end
-    local previous={}; local pixels={}; local rp=1
+    local outputW,outputH=width,height
+    local requestedW,requestedH=tonumber(targetW),tonumber(targetH)
+    if requestedW and requestedH and finite(requestedW) and finite(requestedH) and requestedW>0 and requestedH>0 then
+        local scale=min(1,requestedW/width,requestedH/height)
+        outputW=max(1,min(width,floor(width*scale+0.5))); outputH=max(1,min(height,floor(height*scale+0.5)))
+    end
+    imageDiagnostic("INFO","png.decode",string.format("source=%dx%d output=%dx%d",width,height,outputW,outputH))
+    local sampleX,sampleY={},{ }
+    for x=1,outputW do sampleX[x]=clamp(floor((x-0.5)*width/outputW)+1,1,width) end
+    for y=1,outputH do sampleY[y]=clamp(floor((y-0.5)*height/outputH)+1,1,height) end
+    local previous={}; local pixels={}; local rp=1; local outputRow=1
     local function sample(row,bit)
         local byte=row[floor(bit/8)+1] or 0; local shift=8-depth-(bit%8); return floor(byte/2^shift)%2^depth
     end
     for y=1,height do
         local filter=raw:byte(rp); rp=rp+1; local row={}; for x=1,rowBytes do local value=raw:byte(rp) or 0; rp=rp+1; local left=row[x-bpp] or 0; local up=previous[x] or 0; local upper=previous[x-bpp] or 0
             if filter==1 then value=(value+left)%256 elseif filter==2 then value=(value+up)%256 elseif filter==3 then value=(value+floor((left+up)/2))%256 elseif filter==4 then value=(value+paeth(left,up,upper))%256 elseif filter~=0 then error("unsupported PNG filter") end; row[x]=value end
-        for x=1,width do
-            local r,g,b,a
-            if colorType==0 then local v=depth==8 and row[x] or (depth==16 and row[(x-1)*2+1] or sample(row,(x-1)*depth)); v=depth<8 and floor(v*255/(2^depth-1)) or v; r,g,b=v,v,v; a=255
-            elseif colorType==2 then local base=(x-1)*(depth==16 and 6 or 3)+1; r,g,b=row[base],row[base+(depth==16 and 2 or 1)],row[base+(depth==16 and 4 or 2)]; a=255
-            elseif colorType==3 then local index=depth==8 and row[x] or sample(row,(x-1)*depth); local p=palette[index+1]; if not p then error("PNG palette index outside palette") end; r,g,b=p[1],p[2],p[3]; a=transparency[index+1] or 255
-            elseif colorType==4 then local base=(x-1)*(depth==16 and 4 or 2)+1; r= row[base]; a=row[base+(depth==16 and 2 or 1)]; g,b=r,r
-            elseif colorType==6 then local base=(x-1)*(depth==16 and 8 or 4)+1; r,g,b,a=row[base],row[base+(depth==16 and 2 or 1)],row[base+(depth==16 and 4 or 2)],row[base+(depth==16 and 6 or 3)] end
-            pixels[(y-1)*width+x]=(a or 255)*16777216+(r or 0)*65536+(g or 0)*256+(b or 0)
+        if sampleY[outputRow]==y then
+            for x=1,outputW do
+                local sourceX=sampleX[x]; local r,g,b,a
+                if colorType==0 then local v=depth==8 and row[sourceX] or (depth==16 and row[(sourceX-1)*2+1] or sample(row,(sourceX-1)*depth)); v=depth<8 and floor(v*255/(2^depth-1)) or v; r,g,b=v,v,v; a=255
+                elseif colorType==2 then local base=(sourceX-1)*(depth==16 and 6 or 3)+1; r,g,b=row[base],row[base+(depth==16 and 2 or 1)],row[base+(depth==16 and 4 or 2)]; a=255
+                elseif colorType==3 then local index=depth==8 and row[sourceX] or sample(row,(sourceX-1)*depth); local p=palette[index+1]; if not p then error("PNG palette index outside palette") end; r,g,b=p[1],p[2],p[3]; a=transparency[index+1] or 255
+                elseif colorType==4 then local base=(sourceX-1)*(depth==16 and 4 or 2)+1; r=row[base]; a=row[base+(depth==16 and 2 or 1)]; g,b=r,r
+                elseif colorType==6 then local base=(sourceX-1)*(depth==16 and 8 or 4)+1; r,g,b,a=row[base],row[base+(depth==16 and 2 or 1)],row[base+(depth==16 and 4 or 2)],row[base+(depth==16 and 6 or 3)] end
+                pixels[(outputRow-1)*outputW+x]=(a or 255)*16777216+(r or 0)*65536+(g or 0)*256+(b or 0)
+            end
+            outputRow=outputRow+1
         end
         previous=row; if yieldFn then yieldFn(y/height) end
     end
-    return imageNormalize({width=width,height=height,pixels=pixels})
+    return imageNormalize({width=outputW,height=outputH,pixels=pixels})
 end
 local jpegZigzag={0,1,5,6,14,15,27,28,2,4,7,13,16,26,29,42,3,8,12,17,25,30,41,43,9,11,18,24,31,40,44,53,10,19,23,32,39,45,52,54,20,22,33,38,46,51,55,60,21,34,37,47,50,56,59,61,35,36,48,49,57,58,62,63}
 local function jpegHuffmanBuild(lengths,symbols)
@@ -880,7 +898,7 @@ nativeWallpaperLoad=function(path,mode,targetW,targetH)
     else
         imageDiagnostic("WARN","wallpaper.native", "native decoder unavailable/failed; fallback=pure_lua_png: "..tostring(nativeError or "unknown error"))
     end
-    local decodeOk,decoded=pcall(pngDecode,body)
+    local decodeOk,decoded=pcall(pngDecode,body,nil,targetW,targetH)
     if not decodeOk then
         imageDiagnostic("ERROR","wallpaper.png_decode",diagnosticTrace(decoded))
         return nil,tostring(decoded)

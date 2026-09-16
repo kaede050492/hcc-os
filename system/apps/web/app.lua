@@ -327,7 +327,7 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     if cached then imageDiagnostic("INFO","web.cache","image cache hit: "..tostring(url)); if item then self:finishImageV131(item,cached,exact,alias) else self:showImageV131(cached,imageCachePath(alias),url,true) end; return true end
     local co=coroutine.create(function()
         local decoded
-        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG fallback...",p) end)
+        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG fallback...",p) end,targetW,targetH)
         elseif kind=="jpeg" then decoded=jpegDecode(body,function(p) coroutine.yield("Decoding JPEG...",p) end)
         elseif kind=="qoi" then coroutine.yield("Decoding QOI...",0.2); local qoiError; decoded,qoiError=imageDecodeQoi(body); if not decoded then error(qoiError or "invalid QOI image") end
         else
