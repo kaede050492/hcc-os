@@ -1,8 +1,9 @@
 -- HCC OS v1.5 shared GUI runtime.
 local Runtime={}
 local defaults={networkRefresh=3,resourceRefresh=2,maxImageDownload=4194304,
- imageCacheLimit=4194304,imageCacheEnabled=true,wallpaperCache=true,
- cursorIdle=6,uiScale=1}
+  imageCacheLimit=4194304,imageCacheEnabled=true,wallpaperCache=true,
+  imageDownloadConcurrency=3,httpImageCacheLimit=8388608,httpImageCacheEnabled=true,
+  cursorIdle=6,uiScale=1}
 local palettes={
  -- Keep the existing "black" theme name for compatibility, but make its
  -- default shell match the Windows 10 dark desktop: blue wallpaper, dark
@@ -61,8 +62,11 @@ function Runtime.new(context)
  E.cfg.performanceHistory=math.floor(E.clamp(tonumber(E.cfg.performanceHistory) or 60,20,180))
  E.cfg.networkRefresh=E.clamp(tonumber(E.cfg.networkRefresh) or 3,1,15)
  E.cfg.resourceRefresh=E.clamp(tonumber(E.cfg.resourceRefresh) or 2,0.5,15)
- E.cfg.maxImageDownload=math.floor(E.clamp(tonumber(E.cfg.maxImageDownload) or 4194304,65536,16777216))
- E.cfg.imageCacheLimit=math.floor(E.clamp(tonumber(E.cfg.imageCacheLimit) or 4194304,262144,16777216))
+  E.cfg.maxImageDownload=math.floor(E.clamp(tonumber(E.cfg.maxImageDownload) or 4194304,65536,16777216))
+  E.cfg.imageCacheLimit=math.floor(E.clamp(tonumber(E.cfg.imageCacheLimit) or 4194304,262144,16777216))
+  E.cfg.imageDownloadConcurrency=math.floor(E.clamp(tonumber(E.cfg.imageDownloadConcurrency) or 3,1,4))
+  E.cfg.httpImageCacheLimit=math.floor(E.clamp(tonumber(E.cfg.httpImageCacheLimit) or 8388608,0,33554432))
+  E.cfg.httpImageCacheEnabled=E.cfg.httpImageCacheEnabled~=false
  E.cfg.cursorIdle=E.clamp(tonumber(E.cfg.cursorIdle) or 6,1,30)
  E.cfg.uiScale=E.cfg.uiScale==2 and 2 or 1
  E.configPath=context.paths.settings

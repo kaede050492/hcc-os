@@ -41,6 +41,9 @@ local defaults = {
     maxImageDownload = 4194304,
     imageCacheLimit = 4194304,
     imageCacheEnabled = true,
+    imageDownloadConcurrency = 3,
+    httpImageCacheLimit = 8388608,
+    httpImageCacheEnabled = true,
     cursorIdle = 6,
     uiScale = 1
 }

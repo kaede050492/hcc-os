@@ -141,6 +141,59 @@ local function bitFallback(a,b,mode)
     for _=1,32 do local aa=a%2; local bb=b%2; local yes=(mode=="and" and aa==1 and bb==1) or (mode=="or" and (aa==1 or bb==1)) or (mode=="xor" and aa~=bb); if yes then out=out+place end; a=floor(a/2); b=floor(b/2); place=place*2 end
     return out
 end
+local httpImageCacheDir=fs.combine(storagePaths.cache or "/.hccos/cache","http-images")
+local function httpImageHash(value)
+    local hash=2166136261
+    for i=1,#tostring(value or "") do hash=(hash*16777619+(tostring(value):byte(i) or 0))%4294967296 end
+    return string.format("%08x",hash)
+end
+local function httpImageCachePath(url,kind)
+    return fs.combine(httpImageCacheDir,httpImageHash(url).."."..tostring(kind or "bin"))
+end
+local function httpImageMetaPath(url) return httpImageCachePath(url,"meta") end
+local function readBinaryFile(path,limit)
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid cache path" end
+    if limit and fs.getSize(path)>limit then return nil,"cached image exceeds configured limit" end
+    local f,e=fs.open(path,"rb"); if not f then return nil,e or "cached image is not readable" end
+    local ok,data=pcall(f.readAll); pcall(f.close); if not ok then return nil,tostring(data) end
+    return data or ""
+end
+local function writeBinaryFile(path,body)
+    local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+    local f,e=fs.open(path,"wb"); if not f then return false,e or "cache is not writable" end
+    local ok,reason=pcall(f.write,body); local closed,closeError=pcall(f.close)
+    if not ok then return false,tostring(reason) end; if not closed then return false,tostring(closeError) end
+    return true
+end
+local function imageHttpCacheLoad(url,limit)
+    if not cfg.httpImageCacheEnabled then return nil,nil end
+    local metaPath=httpImageMetaPath(url); if not fs.exists(metaPath) then return nil,nil end
+    local f=fs.open(metaPath,"r"); if not f then return nil,nil end
+    local source=f.readAll() or ""; pcall(f.close)
+    local ok,meta=pcall(textutils.unserialize,source)
+    if not ok or type(meta)~="table" or type(meta.path)~="string" or not fs.exists(meta.path) then return nil,nil end
+    local body,err=readBinaryFile(meta.path,limit or cfg.maxImageDownload)
+    if not body then return nil,nil end
+    return body,meta
+end
+local function imageHttpCacheSave(url,body,kind,headers)
+    if not cfg.httpImageCacheEnabled or type(body)~="string" or #body==0 or #body>cfg.httpImageCacheLimit then return false,"cache disabled or image exceeds cache limit" end
+    local root=storagePaths.cache or "/.hccos/cache"; local required=#body+1024
+    local freeOk,free=pcall(fs.getFreeSpace,root)
+    if freeOk and free~="unlimited" and type(free)=="number" and free<required then return false,"not enough space for HTTP image cache" end
+    local path=httpImageCachePath(url,kind); local saved,saveError=writeBinaryFile(path,body); if not saved then return false,saveError end
+    local metadata={url=url,path=path,kind=kind,contentType=headers and headers["content-type"] or "",length=#body,etag=headers and headers.etag or nil,lastModified=headers and headers["last-modified"] or nil,updatedAt=os.epoch and os.epoch("utc") or 0}
+    local dir=fs.getDir(httpImageMetaPath(url)); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+    local f,e=fs.open(httpImageMetaPath(url),"w"); if not f then return false,e or "cache metadata is not writable" end
+    local ok,reason=pcall(f.write,textutils.serialize(metadata)); local closed,closeError=pcall(f.close)
+    if not ok then return false,tostring(reason) end; if not closed then return false,tostring(closeError) end
+    return true
+end
+local function imageHttpCacheClear()
+    if not fs.exists(httpImageCacheDir) then return true end
+    local ok,err=pcall(function() for _,name in ipairs(fs.list(httpImageCacheDir)) do fs.delete(fs.combine(httpImageCacheDir,name)) end end)
+    return ok,err
+end
 local function band(a,b) return bit32lib and bit32lib.band(a,b) or bitFallback(a,b,"and") end
 local function bor(a,b) return bit32lib and bit32lib.bor(a,b) or bitFallback(a,b,"or") end
 local function bxor(a,b) return bit32lib and bit32lib.bxor(a,b) or bitFallback(a,b,"xor") end
@@ -653,7 +706,7 @@ local function imageStageNativePng(body,key)
     local ok,pathOrError=pcall(function()
         if not fs.exists(nativePngTempDir) then fs.makeDir(nativePngTempDir) end
         local path=fs.combine(nativePngTempDir,imageHash(tostring(key or "png"))..".png")
-        local f,err=fs.open(path,"w"); if not f then error(err or "temporary PNG is not writable") end
+        local f,err=fs.open(path,"wb"); if not f then error(err or "temporary PNG is not writable") end
         local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
         return path
     end)
@@ -705,7 +758,7 @@ function imagePrepare(data,targetW,targetH,progress)
     return lastData,lastStored,lastSize
 end
 end
-E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
+E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.imageResize=imageResize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageHttpCacheLoad=imageHttpCacheLoad; E.imageHttpCacheSave=imageHttpCacheSave; E.imageHttpCacheClear=imageHttpCacheClear; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
 E.resetWallpaperCache=clearWallpaperCache
 
 end

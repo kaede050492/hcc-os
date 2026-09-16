@@ -8,6 +8,21 @@ local function nativeDecode(body)
     if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
     return nil,"Tom's GPU native PNG backend unavailable"
 end
+local function resizePng(data,width,height)
+    if type(E.imageResize)=="function" then return E.imageResize(data,width,height) end
+    return imagePrepare(data,width,height)
+end
+local function httpCacheLoad(url)
+    if type(E.imageHttpCacheLoad)~="function" then return nil,nil end
+    local ok,body,meta=pcall(E.imageHttpCacheLoad,url,cfg.maxImageDownload)
+    if ok then return body,meta end
+    return nil,nil
+end
+local function httpCacheSave(url,body,kind,headers)
+    if type(E.imageHttpCacheSave)~="function" then return false end
+    local ok,saved=pcall(E.imageHttpCacheSave,url,body,kind,headers)
+    return ok and saved==true
+end
 local function nativeFree(record)
     if type(E.imageFreeNativePng)=="function" then pcall(E.imageFreeNativePng,record) end
 end
@@ -35,7 +50,7 @@ local function writeRawPng(path,body)
     if type(path)~="string" or path=="" or type(body)~="string" or #body==0 then return false,"invalid PNG data" end
     local ok,err=pcall(function()
         local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-        local f,e=fs.open(path,"w"); if not f then error(e or "PNG is not writable") end
+        local f,e=fs.open(path,"wb"); if not f then error(e or "PNG is not writable") end
         local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
     end)
     return ok,err
@@ -70,6 +85,7 @@ local function imageKind(path,contentType)
     if c=="image/jpeg" or c=="image/jpg" or p:match("%.jpe?g$") or p:match("%.jpe?g[?#]") then return "jpeg" end
     if c=="image/hcci" or p:match("%.hcci$") or p:match("%.hcci[?#]") then return "hcci" end
 end
+local function pngSignature(body) return type(body)=="string" and body:sub(1,8)=="\137PNG\r\n\26\n" end
 local function responseHeaders(handle)
     local out={}
     if handle and type(handle.getResponseHeaders)=="function" then
@@ -189,6 +205,7 @@ function ImageViewer:startImportBody(job,body)
     if #body==0 then self:importError("Downloaded image is empty"); return end
     if #body>cfg.maxImageDownload then self:importError("Downloaded image exceeds the configured size limit"); return end
     local kind=imageKind(job.url,job.contentType)
+    if not kind and pngSignature(body) then kind="png"; job.contentType="image/png" end
     if not kind then self:importError("Unsupported image format (PNG, JPEG or HCCI required)"); return end
     self.importRawPng=kind=="png" and body or nil
     self.rawPngBody=self.importRawPng
@@ -197,20 +214,14 @@ function ImageViewer:startImportBody(job,body)
         local nativeOk,native,nativeError=pcall(nativeDecode,body)
         if not nativeOk then native=nil; nativeError=tostring(native) end
         if native and native.width<=availableW and native.height<=availableH then
-            local tempPath,stageError=nativeStage(body,job.url)
-            if tempPath then
-                local storeOk,stored,storeError=pcall(persistNativePng,tempPath,job.url)
-                if not storeOk then stored=nil; storeError=tostring(stored or "PNG persistence failed") end
-                nativeDelete(tempPath)
-                if stored then
-                    self:cancelImport(); self:releaseNative(); self.nativeImage=native; self.data=nil; self.path=stored; self.error=nil; self.status="PNG imported and saved"; self.images=imageList()
-                    for i,value in ipairs(self.images) do if value==stored then self.selected=i end end
-                    mark(self.win); notify("PNG image imported and saved",P.success); return
-                end
-                nativeFree(native); nativeError=storeError
-            else
-                nativeFree(native); nativeError=stageError
+            local path=imagePathFor("imported_"..tostring(floor(now()*1000))..".png",#body)
+            local stored,storeError=writeRawPng(path,body)
+            if stored then
+                self:cancelImport(); self:releaseNative(); self.nativeImage=native; self.data=nil; self.rawPngBody=body; self.path=path; self.error=nil; self.status="PNG imported and saved"; self.images=imageList()
+                for i,value in ipairs(self.images) do if value==path then self.selected=i end end
+                mark(self.win); notify("PNG image imported and saved",P.success); return
             end
+            nativeFree(native); nativeError=storeError
         elseif native then
             nativeFree(native); nativeError="native PNG exceeds the available viewer area"
         end
@@ -227,7 +238,7 @@ function ImageViewer:startImportBody(job,body)
             if not normalized then error(normalizeError or "invalid HCCI image") end
             decoded=normalized
         end
-        local data=imagePrepare(decoded,availableW,availableH,function(stage,p) coroutine.yield(stage,p) end)
+        local data=kind=="png" and resizePng(decoded,availableW,availableH) or imagePrepare(decoded,availableW,availableH,function(stage,p) coroutine.yield(stage,p) end)
         return data
     end)
     self.importJob={stage="convert",co=co}; self.status="Converting image... 0%"; mark(self.win)
@@ -238,14 +249,15 @@ function ImageViewer:onHttpSuccess(url,handle)
     if type(handle)~="table" then self:importError("HTTP response handle is invalid"); return true end
     local headers=responseHeaders(handle); local length=tonumber(headers["content-length"] or "")
     if length and length>cfg.maxImageDownload then if handle.close then pcall(handle.close) end; self:importError("Downloaded image exceeds the configured size limit"); return true end
-    job.handle=handle; job.contentType=headers["content-type"] or ""; job.length=length; job.bytes=0; job.parts={}
-    if type(handle.readAll)=="function" then
-        local ok,body=pcall(handle.readAll); if handle.close then pcall(handle.close) end
-        if not ok then self:importError("HTTP response body could not be read"); return true end
-        local processed,processError=pcall(self.startImportBody,self,job,body)
+    job.handle=handle; job.contentType=headers["content-type"] or (job.cachedMeta and job.cachedMeta.contentType or ""); job.length=length; job.bytes=0; job.parts={}; job.headers=headers; job.code=200
+    if type(handle.getResponseCode)=="function" then local ok,code=pcall(handle.getResponseCode); if ok and finite(code) then job.code=code end end
+    if job.code==304 and job.cachedBody then
+        if handle.close then pcall(handle.close) end
+        job.length=#job.cachedBody; local processed,processError=pcall(self.startImportBody,self,job,job.cachedBody)
         if not processed then self:importError("Image processing failed: "..tostring(processError)) end
         return true
     end
+    if job.code<200 or job.code>=300 then if handle.close then pcall(handle.close) end; self:importError("HTTP image request returned HTTP "..tostring(job.code)); return true end
     if type(handle.read)~="function" then self:importError("HTTP response has no readable body"); return true end
     job.stage="download"; self.status="Downloading... 0%"; mark(self.win); return true
 end
@@ -260,7 +272,7 @@ function ImageViewer:update()
         return
     end
     if job.stage=="download" then
-        local chunk; local ok=pcall(function() chunk=job.handle.read(16384) end)
+        local chunk; local ok=pcall(function() chunk=job.handle.read(32768) end)
         if not ok then self:importError("HTTP response body could not be read"); return end
         if chunk and #chunk>0 then
             job.parts[#job.parts+1]=chunk; job.bytes=job.bytes+#chunk
@@ -268,7 +280,8 @@ function ImageViewer:update()
             self.status="Downloading... "..tostring(job.length and floor(clamp(job.bytes/job.length,0,1)*100+0.5) or 0).."%"; mark(self.win); return
         end
         if job.handle.close then pcall(job.handle.close) end
-        local processed,processError=pcall(self.startImportBody,self,job,table.concat(job.parts))
+        local body=table.concat(job.parts); local kind=imageKind(job.url,job.contentType); if kind then httpCacheSave(job.url,body,kind,job.headers or {}) end
+        local processed,processError=pcall(self.startImportBody,self,job,body)
         if not processed then self:importError("Image processing failed: "..tostring(processError)) end
         return
     end
@@ -286,9 +299,11 @@ function ImageViewer:importUrl()
         if not url:match("^https?://[^%s]+$") then errorBox("Only HTTP/HTTPS URLs are allowed"); return end
         if type(http)~="table" or type(http.request)~="function" then errorBox("CC:T HTTP request API unavailable"); return end
         self:cancelImport(); self:releaseNative(); self.rawPngBody=nil; self.importRawPng=nil; self.error=nil; self.importNotice=nil; self.status="Downloading... 0%"
-        local ok,accepted=pcall(http.request,url,nil,{["User-Agent"]="HCC-Image-Viewer/1.5"},true)
+        local cachedBody,cachedMeta=httpCacheLoad(url); local headers={['User-Agent']="HCC-Image-Viewer/1.5",Accept="image/png,image/jpeg,image/*;q=0.8"}
+        if cachedMeta then if cachedMeta.etag and cachedMeta.etag~="" then headers["If-None-Match"]=cachedMeta.etag end; if cachedMeta.lastModified and cachedMeta.lastModified~="" then headers["If-Modified-Since"]=cachedMeta.lastModified end end
+        local ok,accepted=pcall(http.request,url,nil,headers,true)
         if not ok or accepted==false or accepted==nil then self:importError("HTTP image request failed or was denied"); return end
-        self.importJob={stage="wait",url=url,startedAt=now()}; mark(self.win)
+        self.importJob={stage="wait",url=url,startedAt=now(),cachedBody=cachedBody,cachedMeta=cachedMeta}; mark(self.win)
     end,"https://example.com/image.png")
 end
 function ImageViewer:setWallpaper()
