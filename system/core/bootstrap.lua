@@ -91,6 +91,7 @@ local function runInternal(arguments)
             if type(app.attach) == "function" then app.attach(environment, _G.HCCV15) end
         end,
         check=function() return updater:check() end,
+        beginCheck=function() return updater:beginAsyncCheck() end,
         beginAutoCheck=function() return updater:beginAsyncCheck() end,
         handleHttp=function(url, handleOrReason)
             local handled

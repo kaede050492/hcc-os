@@ -16,7 +16,7 @@ local settingsFields={
     {"dimension","Radar dimension","string"}, {"gpuName","GPU name (blank = auto)","string"},
     {"keyboardName","Keyboard (blank = auto)","string"}, {"detectorName","Detector (blank = auto)","string"}}
 table.insert(settingsFields, {"network","Network","section"})
-table.insert(settingsFields, {"update","Update & Recovery","action"})
+table.insert(settingsFields, {"update","System Update","action"})
 table.insert(settingsFields, {"restore","Restore Previous Version","restore"})
 table.insert(settingsFields, {"updateChannel","Update Channel","string"})
 table.insert(settingsFields, {"autoUpdateCheck","Automatic update check","toggle"})

@@ -22,5 +22,5 @@ return {
     {id="terminal", name="Terminal", source="module"},
     {id="settings", name="Settings", source="module"},
     {id="diagnostics", name="Diagnostics", source="module"},
-    {id="updates", module="update_recovery", name="Update & Recovery", source="v1.5"}
+    {id="updates", module="update_recovery", name="System Update", source="v1.5"}
 }

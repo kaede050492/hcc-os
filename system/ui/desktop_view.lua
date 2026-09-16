@@ -8,7 +8,7 @@ return function(E)
         radar={"Player","Radar"},image={"Image","Viewer"},resource={"Resource","Monitor"},
         server={"Server","Monitor"},system={"System","Monitor"},currency={"Currency","Calc"},
         inventory={"Inventory","Viewer"},diagnostics={"Diagnostics"},performance={"Performance"},
-        updates={"Update","Recovery"},terminal={"Terminal"},notepad={"Notepad"},clock={"Clock"},
+        updates={"System","Update"},terminal={"Terminal"},notepad={"Notepad"},clock={"Clock"},
         calendar={"Calendar"},files={"Files"},web={"HCC Web"},logs={"Log Viewer"},settings={"Settings"}
     }
 

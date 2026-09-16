@@ -61,6 +61,10 @@ end
 
 function Updater:cleanup()
     self.cancelled = true
+    -- An HTTP check cannot be forcibly aborted in CraftOS, but clearing the
+    -- job makes its eventual response harmless instead of reviving cancelled
+    -- update state after the user has moved on.
+    self.checkJob = nil
     if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
     self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
 end
@@ -88,6 +92,10 @@ function Updater:check()
 end
 
 function Updater:beginAsyncCheck()
+    if self.checkJob then return false, "Update check already in progress" end
+    if self.state.phase == "downloading" or self.state.phase == "ready" then
+        return false, "Finish or cancel the current update first"
+    end
     if type(http) ~= "table" or type(http.request) ~= "function" then
         return false, "HTTP request API unavailable"
     end
@@ -151,6 +159,7 @@ function Updater:spaceAvailable(files, manifest, repairOnly)
 end
 
 function Updater:begin(manifest, repairOnly)
+    if self.checkJob then return false, "Update check still in progress" end
     local files, err = manifestFiles(manifest)
     if not files then return false, err end
     if repairOnly then
