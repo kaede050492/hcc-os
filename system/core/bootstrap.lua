@@ -67,10 +67,14 @@ local function runInternal(arguments)
     elseif not fs.exists(paths.settings) then
         config:save()
     end
-    if fs.exists(paths.updateTemp) then
-        pcall(fs.delete, paths.updateTemp)
-        logger:info("Cleaned interrupted update temporary files")
+    local interruptedUpdate=false
+    for _,root in ipairs(paths.updateTemps or {paths.updateTemp}) do
+        if fs.exists(root) then
+            pcall(fs.delete, root)
+            interruptedUpdate=true
+        end
     end
+    if interruptedUpdate then logger:info("Cleaned interrupted update temporary files") end
 
     local appRegistry = AppRegistry.new({root=paths.apps,logger=logger})
     local updater = Updater.new(paths, config, logger, Remote)

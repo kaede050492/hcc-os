@@ -130,17 +130,23 @@ function Config:ensureDirectories()
         self.paths.config, self.paths.images, self.paths.cache, self.paths.downloads,
         self.paths.logs, self.paths.backups, self.paths.temp, self.paths.updateTemp
     }
+    for _,path in ipairs(self.paths.backupRoots or {}) do directories[#directories+1]=path end
+    for _,path in ipairs(self.paths.updateTemps or {}) do directories[#directories+1]=path end
     for _, path in ipairs(directories) do
-        if not fs.exists(path) then fs.makeDir(path) end
+        local ok,err=pcall(function() if not fs.exists(path) then fs.makeDir(path) end end)
+        if not ok and self.logger then self.logger:warn("Storage path unavailable: "..tostring(path).." ("..tostring(err)..")") end
     end
 end
 
 function Config:backupLegacyStartup()
     local backup = self.paths.backups.."/migration-1.3.3"
     if fs.exists(self.paths.startup) and not fs.exists(backup.."/startup.lua") then
-        if not fs.exists(backup) then fs.makeDir(backup) end
-        fs.copy(self.paths.startup, backup.."/startup.lua")
-        self.logger:info("Backed up existing startup.lua before migration")
+        local ok,err=pcall(function()
+            if not fs.exists(backup) then fs.makeDir(backup) end
+            fs.copy(self.paths.startup, backup.."/startup.lua")
+        end)
+        if ok then self.logger:info("Backed up existing startup.lua before migration")
+        else self.logger:warn("Could not back up existing startup.lua: "..tostring(err)) end
     end
 end
 

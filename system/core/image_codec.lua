@@ -6,7 +6,8 @@ return function(E)
 -- decoder.  A file is a serialized table with width, height and flat pixels:
 -- {version=1,width=...,height=...,pixels={0xAARRGGBB,...}}.  RLE input is
 -- also accepted as {rle={{color=...,count=...},...}} and is expanded safely.
-local imageDir="/.hccos/images"
+local storagePaths=E.paths or {}
+local imageDir=storagePaths.images or "/.hccos/images"
 local imageCache={}
 local imageToStored
 local function imageColor(value)
@@ -598,8 +599,8 @@ imageToStored=function(data)
     if data and data.version==2 and type(data.palette)=="table" and type(data.rle)=="table" then return {version=2,width=data.width,height=data.height,palette=data.palette,rle=data.rle} end
     local _,stored=imageQuantize(data or {width=1,height=1,pixels={0xFF000000}},16); return stored
 end
-local imageCacheDir="/.hccos/cache/images"
-local nativePngTempDir="/.hccos/temp/images"
+local imageCacheDir=fs.combine(storagePaths.cache or "/.hccos/cache","images")
+local nativePngTempDir=fs.combine(storagePaths.temp or "/.hccos/temp","images")
 local function imageHash(value)
     local hash=2166136261; for i=1,#value do hash=(hash*16777619+value:byte(i))%4294967296 end; return string.format("%08x",hash)
 end
@@ -622,8 +623,8 @@ function imageCacheSave(key,data)
     local ok,err=pcall(function()
         -- Ensure the complete cache path exists even on filesystems where
         -- makeDir does not implicitly create every parent directory.
-        if not fs.exists("/.hccos") then fs.makeDir("/.hccos") end
-        if not fs.exists("/.hccos/cache") then fs.makeDir("/.hccos/cache") end
+        local cacheRoot=storagePaths.cache or "/.hccos/cache"
+        if not fs.exists(cacheRoot) then fs.makeDir(cacheRoot) end
         if not fs.exists(imageCacheDir) then fs.makeDir(imageCacheDir) end
         local serialized=textutils.serialize(imageToStored(data))
         if type(serialized)~="string" or serialized=="" then error("image cache serialization failed") end

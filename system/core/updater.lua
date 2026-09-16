@@ -20,6 +20,129 @@ local function ensureParent(path)
     if parent ~= "" and not fs.exists(parent) then fs.makeDir(parent) end
 end
 
+local function driveOf(path)
+    local ok,value=pcall(fs.getDrive,path)
+    return ok and value or nil
+end
+
+local function transfer(source,destination)
+    ensureParent(destination)
+    local sourceDrive=driveOf(source)
+    local destinationDrive=driveOf(fs.getDir(destination)=="" and "/" or fs.getDir(destination))
+    if sourceDrive and sourceDrive==destinationDrive then
+        fs.move(source,destination)
+        return
+    end
+    -- CC:T mounts disk and computer storage separately.  Move cannot be
+    -- assumed to work across mounts, so copy first and remove only after the
+    -- destination has been written successfully.
+    fs.copy(source,destination)
+    if fs.exists(source) then fs.delete(source) end
+end
+
+local function treeSize(path)
+    if not fs.exists(path) then return 0 end
+    if not fs.isDir(path) then return math.max(0,tonumber(fs.getSize(path)) or 0) end
+    local total=0
+    for _,name in ipairs(fs.list(path)) do total=total+treeSize(fs.combine(path,name)) end
+    return total
+end
+
+local function freeSpace(path)
+    local ok,value=pcall(fs.getFreeSpace,path)
+    return ok and value or nil
+end
+
+local function updateRoots(paths)
+    local roots=paths and paths.updateTemps
+    if type(roots)=="table" and #roots>0 then return roots end
+    return {paths and paths.updateTemp or "/.hccos/temp/update"}
+end
+
+local function backupRoots(paths)
+    local roots=paths and paths.backupRoots
+    if type(roots)=="table" and #roots>0 then return roots end
+    return {paths and paths.backups or "/.hccos/backups"}
+end
+
+local function backupSearchRoots(paths)
+    local roots={}
+    local seen={}
+    local function add(path)
+        if type(path)=="string" and path~="" and not seen[path] then
+            seen[path]=true; roots[#roots+1]=path
+        end
+    end
+    for _,root in ipairs(backupRoots(paths)) do add(root) end
+    -- Keep rollback backups made before multi-disk storage was enabled.
+    add("/.hccos/backups")
+    return roots
+end
+
+local function backupName(path)
+    return tostring(path):match("([^/]+)$") or tostring(path)
+end
+
+local function collectFiles(root,current,relative,result)
+    for _,name in ipairs(fs.list(current)) do
+        local child=fs.combine(current,name)
+        local childRelative=relative=="" and name or relative.."/"..name
+        if fs.isDir(child) then
+            collectFiles(root,child,childRelative,result)
+        else
+            result[#result+1]={source=child,relative=childRelative}
+        end
+    end
+end
+
+local function readBackupIndex(backup)
+    local indexPath=fs.combine(backup,"backup.lua")
+    if not fs.exists(indexPath) or fs.isDir(indexPath) then return nil end
+    local f=fs.open(indexPath,"r")
+    if not f then return nil end
+    local source=f.readAll() or ""
+    f.close()
+    local ok,value=pcall(textutils.unserialize,source)
+    if ok and type(value)=="table" and type(value.locations)=="table" then return value end
+    return nil
+end
+
+local function cleanupBackup(paths,backup)
+    local name=backupName(backup)
+    for _,root in ipairs(backupSearchRoots(paths)) do
+        local path=fs.combine(root,name)
+        if fs.exists(path) then pcall(fs.delete,path) end
+    end
+end
+
+local function restoreBackup(paths,backup,destination)
+    local index=readBackupIndex(backup)
+    if not index then
+        local source=fs.combine(backup,"system")
+        if not fs.exists(source) then error("Rollback backup is incomplete: "..tostring(backup)) end
+        transfer(source,destination)
+        return
+    end
+    local moved={}
+    local ok,err=pcall(function()
+        for relative,source in pairs(index.locations) do
+            if not safeRelative(relative) or type(source)~="string" or not fs.exists(source) or fs.isDir(source) then
+                error("Rollback backup file is missing: "..tostring(relative))
+            end
+            local target=fs.combine(destination,relative)
+            transfer(source,target)
+            moved[#moved+1]={source=source,target=target}
+        end
+    end)
+    if not ok then
+        for index=#moved,1,-1 do
+            local item=moved[index]
+            if fs.exists(item.target) then pcall(transfer,item.target,item.source) end
+        end
+        error(err)
+    end
+end
+
 local function readLocalManifest(path)
     if not fs.exists(path) then return nil, "local manifest is missing" end
     local f = fs.open(path, "r")
@@ -52,6 +175,8 @@ function Updater.new(paths, config, logger, remote)
     self.cancelled = false
     self.checkJob = nil
     self.downloadJob = nil
+    self.stageRoots = {}
+    self.stagedBytes = {}
     return self
 end
 
@@ -68,7 +193,7 @@ function Updater:cleanup()
     -- update state after the user has moved on.
     self.checkJob = nil
     self.downloadJob = nil
-    if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
+    for _,root in ipairs(updateRoots(self.paths)) do if fs.exists(root) then pcall(fs.delete,root) end end
     self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
 end
 
@@ -232,6 +357,26 @@ function Updater:spaceAvailable(files, manifest, repairOnly)
     if required <= 0 then
         for _, file in ipairs(files) do required = required + math.max(0, tonumber(file.size) or 0) end
     end
+    local stageFree=0
+    local stageExternal=false
+    for _,root in ipairs(updateRoots(self.paths)) do
+        local value=freeSpace(root)
+        if type(value)=="number" then stageFree=stageFree+value elseif value=="unlimited" then stageFree=math.huge end
+        if driveOf(root) and driveOf(root)~=driveOf("/") then stageExternal=true end
+    end
+    local backupFree=0
+    for _,root in ipairs(backupRoots(self.paths)) do
+        local value=freeSpace(root)
+        if type(value)=="number" then backupFree=backupFree+value elseif value=="unlimited" then backupFree=math.huge end
+    end
+    local currentSize=treeSize(self.paths.system)
+    if stageExternal then
+        -- The update and the distributed rollback backup share the mounted
+        -- disks.  Reserve both before allowing the download to start.
+        required=math.max(65536,tonumber(manifest and manifest.maxFileSize) or 40000)*2
+        if type(stageFree)=="number" and stageFree<installed+currentSize+32768 then return false end
+        if type(backupFree)=="number" and backupFree<currentSize+16384 then return false end
+    end
     return free >= required + 16384
 end
 
@@ -252,13 +397,24 @@ function Updater:begin(manifest, repairOnly)
         self.state = {phase="blocked", current="", completed=0, total=#files, message="Not enough free space"}
         return false, self.state.message
     end
-    if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
-    fs.makeDir(self.paths.updateTemp)
+    local prepared,prepareError=pcall(function()
+        for _,root in ipairs(updateRoots(self.paths)) do
+            if fs.exists(root) then pcall(fs.delete,root) end
+            fs.makeDir(root)
+        end
+    end)
+    if not prepared then
+        self.state = {phase="failed", current="", completed=0, total=#files, message="Update storage unavailable: "..tostring(prepareError)}
+        self.logger:error(self.state.message)
+        return false, self.state.message
+    end
     self.manifest = manifest
     self.files = files
     self.repairOnly = repairOnly == true
     self.fileIndex = 0
     self.downloadedBytes = 0
+    self.stageRoots = {}
+    self.stagedBytes = {}
     self.cancelled = false
     self.state = {phase="downloading", current="", completed=0, total=#files, message=#files == 0 and "Nothing to repair" or "Downloading update"}
     return true
@@ -272,7 +428,19 @@ function Updater:stageDownloadedFile(file, body)
     if #body > maximum or self.downloadedBytes + #body > installed then
         return false, "Downloaded data exceeds manifest storage limits"
     end
-    local target = fs.combine(self.paths.updateTemp, file.path)
+    local selected,selectedFree
+    for _,root in ipairs(updateRoots(self.paths)) do
+        local free=freeSpace(root)
+        if free=="unlimited" then free=math.huge end
+        if type(free)=="number" then
+            free=free-(self.stagedBytes[root] or 0)
+            if free>=#body+4096 and (not selectedFree or free>selectedFree) then selected,selectedFree=root,free end
+        end
+    end
+    if not selected then return false,"No update disk has enough free space for "..file.path end
+    self.stageRoots[file.path]=selected
+    self.stagedBytes[selected]=(self.stagedBytes[selected] or 0)+#body
+    local target = fs.combine(selected, file.path)
     ensureParent(target)
     local f, openError = fs.open(target, "w")
     if not f then return false, openError end
@@ -281,6 +449,16 @@ function Updater:stageDownloadedFile(file, body)
     if not ok then return false, writeError end
     self.downloadedBytes = self.downloadedBytes + #body
     return true
+end
+
+function Updater:stagedPath(relative)
+    local selected=self.stageRoots and self.stageRoots[relative]
+    if selected then return fs.combine(selected,relative) end
+    for _,root in ipairs(updateRoots(self.paths)) do
+        local candidate=fs.combine(root,relative)
+        if fs.exists(candidate) then return candidate end
+    end
+    return fs.combine(self.paths.updateTemp,relative)
 end
 
 function Updater:step()
@@ -312,18 +490,63 @@ function Updater:step()
 end
 
 function Updater:backupCurrent(version)
-    local name = safeVersion(version)
-    local destination = self.paths.backups.."/"..name
-    if fs.exists(destination) then destination = destination.."-"..tostring(os.epoch("utc")) end
-    fs.makeDir(destination)
-    local info = fs.open(destination.."/version", "w")
-    if info then info.write(tostring(version or "unknown")); info.close() end
-    if fs.exists(self.paths.system) then fs.move(self.paths.system, destination.."/system") end
+    local roots=backupRoots(self.paths)
+    local primary=roots[1] or self.paths.backups or "/.hccos/backups"
+    local name=safeVersion(version)
+    local function nameExists(value)
+        for _,root in ipairs(backupSearchRoots(self.paths)) do
+            if fs.exists(fs.combine(root,value)) then return true end
+        end
+        return false
+    end
+    if nameExists(name) then name=name.."-"..tostring(os.epoch("utc")) end
+    local destination=fs.combine(primary,name)
+    local moved={}
+    local locations={}
+    local usage={}
+    local files={}
+    if fs.exists(self.paths.system) then collectFiles(self.paths.system,self.paths.system,"",files) end
+    local ok,err=pcall(function()
+        if not fs.exists(destination) then fs.makeDir(destination) end
+        for _,file in ipairs(files) do
+            local size=math.max(0,tonumber(fs.getSize(file.source)) or 0)
+            local selected,selectedFree
+            for _,root in ipairs(roots) do
+                local free=freeSpace(root)
+                if free=="unlimited" or free==nil then free=math.huge end
+                if type(free)=="number" then
+                    free=free-(usage[root] or 0)
+                    if free>=size+4096 and (not selectedFree or free>selectedFree) then selected,selectedFree=root,free end
+                end
+            end
+            if not selected then error("No backup disk has enough free space for "..file.relative) end
+            local target=fs.combine(selected,name.."/parts/"..file.relative)
+            ensureParent(target)
+            transfer(file.source,target)
+            moved[#moved+1]={source=file.source,target=target}
+            locations[file.relative]=target
+            usage[selected]=(usage[selected] or 0)+size
+        end
+        local index=fs.open(fs.combine(destination,"backup.lua"),"w")
+        if not index then error("Could not write distributed rollback index") end
+        local serialized=textutils.serialize({version=tostring(version or "unknown"),locations=locations})
+        local wrote=pcall(index.write,serialized)
+        index.close()
+        if not wrote then error("Could not write distributed rollback index") end
+    end)
+    if not ok then
+        for index=#moved,1,-1 do
+            local item=moved[index]
+            if fs.exists(item.target) then pcall(transfer,item.target,item.source) end
+        end
+        cleanupBackup(self.paths,destination)
+        return nil,err
+    end
     return destination
 end
 
 function Updater:moveTree(source, destination, skip)
-    if not fs.isDir(source) then ensureParent(destination); fs.move(source, destination); return end
+    if not fs.isDir(source) then transfer(source, destination); return end
     if not fs.exists(destination) then fs.makeDir(destination) end
     for _, name in ipairs(fs.list(source)) do
         if not (skip and skip[name]) then self:moveTree(fs.combine(source, name), fs.combine(destination, name), nil) end
@@ -339,17 +562,19 @@ function Updater:apply()
         if fs.exists(rollbackRoot) then return false, "Previous repair backup requires recovery: "..rollbackRoot end
         local ok, err = pcall(function()
             for _, file in ipairs(self.files or {}) do
-                local source = fs.combine(self.paths.updateTemp, file.path)
+                local source = self:stagedPath(file.path)
                 local target = fs.combine(self.paths.system, file.path)
                 if not fs.exists(source) or fs.isDir(source) then error("Staged repair file is missing: "..file.path) end
                 local backup = fs.combine(rollbackRoot, file.path)
                 local hadOriginal = fs.exists(target)
                 local item={path=target, backup=backup, moved=false, installed=false}
                 placed[#placed+1] = item
-                if hadOriginal then ensureParent(backup); fs.move(target,backup); item.moved=true end
-                ensureParent(target); fs.move(source, target); item.installed=true
+                if hadOriginal then transfer(target,backup); item.moved=true end
+                transfer(source, target); item.installed=true
             end
-            if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
+            for _,root in ipairs(updateRoots(self.paths)) do
+                if fs.exists(root) then fs.delete(root) end
+            end
         end)
         if not ok then
             local restored=true
@@ -357,12 +582,14 @@ function Updater:apply()
                 local item=placed[index]
                 local recovered=pcall(function()
                     if item.installed and fs.exists(item.path) then fs.delete(item.path) end
-                    if item.moved then ensureParent(item.path); fs.move(item.backup,item.path) end
+                    if item.moved then transfer(item.backup,item.path) end
                 end)
                 restored=restored and recovered
             end
             if restored and fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
-            if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
+            for _,root in ipairs(updateRoots(self.paths)) do
+                if fs.exists(root) then pcall(fs.delete,root) end
+            end
             self.state.phase, self.state.message = "failed", (restored and "Repair rolled back: " or "Repair recovery required; backup kept at "..rollbackRoot..": ")..tostring(err)
             self.logger:error(self.state.message)
             return false, err
@@ -377,21 +604,31 @@ function Updater:apply()
     local backupOk, backup, backupError = pcall(self.backupCurrent, self, oldVersion)
     if not backupOk or not backup then return false, backupError or backup end
     local ok, err = pcall(function()
-        local versionPath = fs.combine(self.paths.updateTemp, "version.lua")
+        local versionPath = self:stagedPath("version.lua")
         if not fs.exists(versionPath) then error("Downloaded version information is missing") end
         fs.makeDir(self.paths.system)
-        self:moveTree(self.paths.updateTemp, self.paths.system, { ["version.lua"] = true })
-        fs.move(versionPath, self.paths.versionFile)
+        for _,file in ipairs(self.files or {}) do
+            if file.path ~= "version.lua" then
+                local source=self:stagedPath(file.path)
+                if not fs.exists(source) or fs.isDir(source) then error("Staged update file is missing: "..file.path) end
+                transfer(source,fs.combine(self.paths.system,file.path))
+            end
+        end
+        transfer(versionPath, self.paths.versionFile)
         self:pruneRemovedAppPackages()
-        if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
+        for _,root in ipairs(updateRoots(self.paths)) do
+            if fs.exists(root) then fs.delete(root) end
+        end
     end)
     if not ok then
         local restored=pcall(function()
             if fs.exists(self.paths.system) then fs.delete(self.paths.system) end
-            fs.move(backup.."/system", self.paths.system)
+            restoreBackup(self.paths,backup,self.paths.system)
         end)
-        if restored and fs.exists(backup) then pcall(fs.delete,backup) end
-        if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
+        if restored then cleanupBackup(self.paths,backup) end
+        for _,root in ipairs(updateRoots(self.paths)) do
+            if fs.exists(root) then pcall(fs.delete,root) end
+        end
         self.state.phase, self.state.message = "failed", (restored and "Update rolled back: " or "Update recovery required; backup kept at "..backup..": ")..tostring(err)
         self.logger:error(self.state.message)
         return false, err
@@ -404,32 +641,61 @@ function Updater:apply()
 end
 
 function Updater:rollback(version)
-    local name = version and safeVersion(version) or nil
-    local candidates = {}
-    if name then candidates[#candidates+1] = self.paths.backups.."/"..name end
-    if fs.exists(self.paths.backups) then
-        for _, entry in ipairs(fs.list(self.paths.backups)) do
-            local path = self.paths.backups.."/"..entry
-            if fs.isDir(path) and fs.exists(path.."/system") then candidates[#candidates+1] = path end
+    local requested=version and safeVersion(version) or nil
+    local candidates={}
+    local byName={}
+    for _,root in ipairs(backupSearchRoots(self.paths)) do
+        if fs.exists(root) and fs.isDir(root) then
+            for _,entry in ipairs(fs.list(root)) do
+                local path=fs.combine(root,entry)
+                if fs.isDir(path) and (fs.exists(path.."/backup.lua") or fs.exists(path.."/system")) then
+                    if not byName[entry] or fs.exists(path.."/backup.lua") then byName[entry]=path end
+                end
+            end
         end
     end
-    local selected = candidates[1]
-    if not name then
-        table.sort(candidates, function(a, b) return a > b end)
-        selected = candidates[1]
+    for _,path in pairs(byName) do candidates[#candidates+1]=path end
+    local selected=requested and byName[requested] or nil
+    if not selected then
+        table.sort(candidates, function(a,b) return a>b end)
+        selected=candidates[1]
     end
-    if not selected or not fs.exists(selected.."/system") then return false, "No rollback backup is available" end
+    if not selected or (not readBackupIndex(selected) and not fs.exists(selected.."/system")) then return false, "No rollback backup is available" end
+
+    if readBackupIndex(selected) then
+        local currentVersion=self.localManifest and self.localManifest.version or "current"
+        local currentBackup,currentError=self:backupCurrent(currentVersion)
+        if not currentBackup then return false,"Could not preserve the current system: "..tostring(currentError) end
+        local restored,restoreError=pcall(function()
+            if fs.exists(self.paths.system) then fs.delete(self.paths.system) end
+            restoreBackup(self.paths,selected,self.paths.system)
+        end)
+        if not restored then
+            local recovered=pcall(function()
+                if fs.exists(self.paths.system) then fs.delete(self.paths.system) end
+                restoreBackup(self.paths,currentBackup,self.paths.system)
+            end)
+            if recovered then cleanupBackup(self.paths,currentBackup) end
+            return false,(recovered and "Rollback failed and was restored: " or "Rollback recovery required: ")..tostring(restoreError)
+        end
+        cleanupBackup(self.paths,selected)
+        self.logger:warn("Rolled back HCC OS using "..selected)
+        self:refreshAppRegistry()
+        self.state.phase, self.state.message = "rolledback", "Rollback complete; restart HCC OS"
+        return true
+    end
+
     local temporary = self.paths.temp.."/rollback-current"
     if fs.exists(temporary) then fs.delete(temporary) end
     local movedCurrent, movedBackup = false, false
     local ok, err = pcall(function()
-        if fs.exists(self.paths.system) then fs.move(self.paths.system, temporary); movedCurrent=true end
-        fs.move(selected.."/system", self.paths.system); movedBackup=true
-        if movedCurrent then fs.move(temporary, selected.."/system"); movedCurrent=false end
+        if fs.exists(self.paths.system) then transfer(self.paths.system, temporary); movedCurrent=true end
+        transfer(selected.."/system", self.paths.system); movedBackup=true
+        if movedCurrent then transfer(temporary, selected.."/system"); movedCurrent=false end
     end)
     if not ok then
-        if movedBackup and fs.exists(self.paths.system) then pcall(fs.move,self.paths.system,selected.."/system") end
-        if fs.exists(temporary) then fs.move(temporary, self.paths.system) end
+        if movedBackup and fs.exists(self.paths.system) then pcall(transfer,self.paths.system,selected.."/system") end
+        if fs.exists(temporary) then transfer(temporary, self.paths.system) end
         return false, err
     end
     self.logger:warn("Rolled back HCC OS using "..selected)

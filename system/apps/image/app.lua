@@ -2,6 +2,8 @@
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
 local _ENV=env
+local storagePaths=E.paths or {}
+local imageStorage=storagePaths.images or "/.hccos/images"
 local function nativeDecode(body)
     if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
     return nil,"Tom's GPU native PNG backend unavailable"
@@ -94,7 +96,7 @@ function ImageViewer:refreshList() self.images=imageList(); self.selected=clamp(
 function ImageViewer:openDialog()
     dialog("Open Image","Absolute .hcci, .png or .jpeg path",{"Open","Cancel"},function(b,value)
         if b=="Open" then self:loadPath(value) end
-    end,self.path or "/.hccos/images/image.hcci")
+    end,self.path or fs.combine(imageStorage,"image.hcci"))
 end
 function ImageViewer:saveAs()
     if self.nativeImage and self.path then
@@ -114,7 +116,7 @@ function ImageViewer:saveAs()
         if b~="Save" then return end
         value=tostring(value or ""); if not value:lower():match("%.hcci$") then value=value..".hcci" end
         local ok,err=imageWrite(value,self.data); if not ok then errorBox(err) else self.path=value; self.status="HCCI saved"; self:refreshList(); notify("Image saved",P.success) end
-    end,self.path or "/.hccos/images/image.hcci")
+    end,self.path or fs.combine(imageStorage,"image.hcci"))
 end
 function ImageViewer:interval()
     return self.importJob and (self.importJob.stage=="wait" and 0.25 or 0.05) or 1
@@ -130,7 +132,7 @@ function ImageViewer:importError(message)
 end
 function ImageViewer:finishImportData(data)
     if not data then self:importError("Downloaded data could not be converted to an image"); return end
-    local path="/.hccos/images/imported_"..tostring(floor(now()*1000))..".hcci"
+    local path=fs.combine(imageStorage,"imported_"..tostring(floor(now()*1000))..".hcci")
     local saved,saveError=imageWrite(path,data)
     if not saved then self:importError("Image was decoded but could not be saved: "..tostring(saveError)); return end
     self.data=data; self.path=path; self.nativeImage=nil; self.error=nil; self.status="Image imported and saved"; self.images=imageList()

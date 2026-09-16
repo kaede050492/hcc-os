@@ -23,6 +23,7 @@ local function runDesktop(context,catalog,holder)
  end
  local Runtime=loadSystem("core/runtime.lua")
  local E=Runtime.new(context); holder.runtime=E
+ E.paths=context.paths
  E.HCCV15=context.api; E.HCCV14=context.api; E.Widget=context.ui.widgets; E.palette=E.P; E.modules=modules
  install(E,"ui/gpu_toms.lua",loadSystem)
  install(E,"ui/canvas.lua",loadSystem)

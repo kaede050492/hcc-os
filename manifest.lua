@@ -5,7 +5,7 @@ return {
     product = "HCC OS",
     version = "1.5.0",
     build = 1500,
-    revision = "20260916-16",
+    revision = "20260916-17",
     edition = "Tom's Peripherals",
     channel = "stable",
     installedSize = 440000,

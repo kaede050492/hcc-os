@@ -2,6 +2,9 @@
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
 local _ENV=env
+local storagePaths=E.paths or {}
+local imageStorage=storagePaths.images or "/.hccos/images"
+local downloadStorage=storagePaths.downloads or "/.hccos/downloads"
 local function nativeDecode(body)
     if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
     return nil,"Tom's GPU native PNG backend unavailable"
@@ -90,8 +93,8 @@ function Web:reload() if self.url~="" then self:load(self.url,false) end end
 function Web:download()
     if self.body=="" or self.url=="" then return end
     local filename=self.url:match("/([^/?#]+)[?#]?[^/]*$") or "download.txt"; filename=filename:gsub("[^%w%._-]","_"):sub(1,64)
-    local path=fs.combine("/.hccos/downloads",filename)
-    local save=function() local ok,err=pcall(function() if not fs.exists("/.hccos/downloads") then fs.makeDir("/.hccos/downloads") end; local f,e=fs.open(path,"w"); if not f then error(e) end; f.write(self.body); f.close() end); if ok then notify("Downloaded "..path,P.success) else errorBox(err) end end
+    local path=fs.combine(downloadStorage,filename)
+    local save=function() local ok,err=pcall(function() if not fs.exists(downloadStorage) then fs.makeDir(downloadStorage) end; local f,e=fs.open(path,"w"); if not f then error(e) end; f.write(self.body); f.close() end); if ok then notify("Downloaded "..path,P.success) else errorBox(err) end end
     if fs.exists(path) then dialog("Overwrite download","Replace "..path.."?",{"Yes","No"},function(b) if b=="Yes" then save() end end) else save() end
 end
 function Web:onKey(k)
@@ -196,7 +199,7 @@ function Web:finishImageV131(item,data,cacheKey,alias)
         -- The image cache is optional.  Keep the downloaded image usable
         -- when its directory is unavailable by persisting a normal HCCI in
         -- the user image directory instead.
-        local fallback=fs.combine("/.hccos/images","web_"..tostring(floor(now()*1000))..".hcci")
+        local fallback=fs.combine(imageStorage,"web_"..tostring(floor(now()*1000))..".hcci")
         local stored,storeError=imageWrite(fallback,data)
         if stored then path=fallback; self.cacheNotice="Cache unavailable; stored as HCCI" else self.cacheNotice="Cache unavailable: "..tostring(err or storeError) end
     else
@@ -344,11 +347,11 @@ function Web:saveHcciV131()
                 fs.copy(self.imagePath,value)
             end)
             if ok then notify("PNG image saved",P.success) else errorBox(err) end
-        end,"/.hccos/images/web_image.png")
+        end,fs.combine(imageStorage,"web_image.png"))
         return
     end
     if not self.imageData then return end
-    dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,"/.hccos/images/web_image.hcci")
+    dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,fs.combine(imageStorage,"web_image.hcci"))
 end
 function Web:setWallpaperV131()
     if self.nativeImage and self.imagePath then
@@ -363,7 +366,7 @@ function Web:setWallpaperV131()
     if not path then
         local alias=self:cacheAliasV131(self.url,576,320); local ok=imageCacheSave(alias,self.imageData)
         if ok then path=imageCachePath(alias) else
-            path=fs.combine("/.hccos/images","web_wallpaper_"..tostring(floor(now()*1000))..".hcci")
+            path=fs.combine(imageStorage,"web_wallpaper_"..tostring(floor(now()*1000))..".hcci")
             local stored,storeError=imageWrite(path,self.imageData)
             if not stored then errorBox("Could not save image as HCCI: "..tostring(storeError)); return end
         end
