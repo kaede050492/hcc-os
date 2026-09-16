@@ -34,17 +34,22 @@ function UpdateRecovery:check()
     local result, err = self.api.check()
     self.result = result
     self.error = err
-    if result then self.status = result.available and ("Update available: "..result.remoteVersion) or "Already up to date"
+    if result then
+        self.status = result.available and "Update available" or (result.refreshAvailable and "Same version - refresh available" or (result.downgradeBlocked and "Remote revision is older; downgrade blocked" or "Already up to date"))
     else self.status = "Offline: "..tostring(err) end
     self.api.autoUpdatePending = false
     if self.win then self.env.mark(self.win) end
 end
 
-function UpdateRecovery:download()
-    if not self.result or not self.result.available then return end
+function UpdateRecovery:download(refresh)
+    if not self.result or (not self.result.available and not (refresh and self.result.refreshAvailable)) then return end
     local ok, err = self.api.beginUpdate(self.result.manifest)
     self.status = ok and "Downloading..." or "Download refused: "..tostring(err)
     if self.win then self.env.mark(self.win) end
+end
+
+function UpdateRecovery:refresh()
+    self:download(true)
 end
 
 function UpdateRecovery:apply()
@@ -71,7 +76,7 @@ end
 
 function UpdateRecovery:update()
     local state = self.api.context.updater:status()
-    if state.phase == "available" or state.phase == "current" then
+    if state.phase == "available" or state.phase == "refresh_available" or state.phase == "current" then
         if not self.result then self.result = self.api.context.updater.lastCheck end
         self.status = state.message
     end
@@ -86,6 +91,7 @@ end
 function UpdateRecovery:onKey(key)
     if key == keys.f5 then self:check()
     elseif key == keys.d then self:download()
+    elseif key == keys.f then self:refresh()
     elseif key == keys.a then self:apply()
     elseif key == keys.c then self:cancel()
     elseif key == keys.r then self:rollback()
@@ -97,8 +103,10 @@ function UpdateRecovery:draw(canvas)
     local env = self.env
     canvas:text(7, 6, "UPDATE & RECOVERY", env.palette.accent)
     canvas:text(7, 20, "GitHub manifest / transactional system updates", env.palette.textSecondary)
-    canvas:text(7, 38, "LOCAL: "..tostring(self.result and self.result.localVersion or "1.4.0"), env.palette.textPrimary)
-    canvas:text(7, 51, "REMOTE: "..tostring(self.result and self.result.remoteVersion or "not checked"), env.palette.textPrimary)
+    local localRevision=self.result and self.result.localRevision or ""
+    local remoteRevision=self.result and self.result.remoteRevision or ""
+    canvas:text(7, 38, "LOCAL: "..tostring(self.result and self.result.localVersion or "1.4.0")..(localRevision~="" and " ("..localRevision..")" or ""), env.palette.textPrimary)
+    canvas:text(7, 51, "REMOTE: "..tostring(self.result and self.result.remoteVersion or "not checked")..(remoteRevision~="" and " ("..remoteRevision..")" or ""), env.palette.textPrimary)
     canvas:text(7, 66, "STATUS: "..tostring(self.status), self.error and env.palette.error or env.palette.textSecondary)
     local state = self.api.context.updater:status()
     if state.total and state.total > 0 then
@@ -111,9 +119,10 @@ function UpdateRecovery:draw(canvas)
     button(env, self, canvas, 84, 112, 72, "DOWNLOAD", function() self:download() end)
     button(env, self, canvas, 161, 112, 62, "APPLY", function() self:apply() end)
     button(env, self, canvas, 228, 112, 60, "CANCEL", function() self:cancel() end)
+    button(env, self, canvas, 293, 112, 76, "REFRESH", function() self:refresh() end)
     button(env, self, canvas, 7, 132, 72, "ROLLBACK", function() self:rollback() end)
     button(env, self, canvas, 84, 132, 82, "RECOVERY", function() self:openRecovery() end)
-    canvas:text(7, canvas.h-17, "F5 check  D download  A apply  R rollback  ENTER recovery", env.palette.textSecondary)
+    canvas:text(7, canvas.h-17, "F5 check  D download  F refresh  A apply  R rollback", env.palette.textSecondary)
 end
 
 function UpdateRecovery.attach(environment, api)

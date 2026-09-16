@@ -16,6 +16,45 @@ local function loadLuaTable(source, name)
     return value
 end
 
+local function compareVersion(left, right)
+    local function parts(value)
+        local result = {}
+        for number in tostring(value or "0"):gmatch("%d+") do result[#result+1] = tonumber(number) or 0 end
+        if #result == 0 then result[1] = 0 end
+        return result
+    end
+    local a, b = parts(left), parts(right)
+    for index = 1, math.max(#a, #b) do
+        local av, bv = a[index] or 0, b[index] or 0
+        if av ~= bv then return av > bv and 1 or -1 end
+    end
+    return 0
+end
+
+local function revisionOf(manifest)
+    if type(manifest) ~= "table" then return "", "none" end
+    if manifest.revision ~= nil and tostring(manifest.revision) ~= "" then return tostring(manifest.revision), "revision" end
+    if manifest.build ~= nil and tostring(manifest.build) ~= "" then return tostring(manifest.build), "build" end
+    return "", "none"
+end
+
+local function compareRevision(left, right)
+    if left == right then return 0 end
+    local function parts(value)
+        local result = {}
+        for number in tostring(value or ""):gmatch("%d+") do result[#result+1] = tonumber(number) or 0 end
+        return result
+    end
+    local a, b = parts(left), parts(right)
+    if #a > 0 and #b > 0 then
+        for index = 1, math.max(#a, #b) do
+            local av, bv = a[index] or 0, b[index] or 0
+            if av ~= bv then return av > bv and 1 or -1 end
+        end
+    end
+    return tostring(left) > tostring(right) and 1 or -1
+end
+
 function Remote.parseManifest(source)
     return loadLuaTable(source, "remote manifest")
 end
@@ -71,19 +110,35 @@ function Remote.fetchManifest(config)
     return manifest
 end
 
+function Remote.compareManifests(localManifest, manifest)
+    if type(manifest) ~= "table" then return nil, "remote manifest is invalid" end
+    local localVersion = tostring(localManifest and localManifest.version or "unknown")
+    local remoteVersion = tostring(manifest.version or "unknown")
+    local localRevision, localRevisionKind = revisionOf(localManifest)
+    local remoteRevision, remoteRevisionKind = revisionOf(manifest)
+    local versionComparison = compareVersion(remoteVersion, localVersion)
+    local revisionComparison = versionComparison == 0 and compareRevision(remoteRevision, localRevision) or 0
+    local available = versionComparison > 0 or (versionComparison == 0 and revisionComparison > 0)
+    return {
+        available = available,
+        refreshAvailable = versionComparison == 0 and revisionComparison == 0,
+        downgradeBlocked = versionComparison < 0 or (versionComparison == 0 and revisionComparison < 0),
+        localVersion = localVersion,
+        remoteVersion = remoteVersion,
+        localRevision = localRevision,
+        remoteRevision = remoteRevision,
+        localRevisionKind = localRevisionKind,
+        remoteRevisionKind = remoteRevisionKind,
+        localBuild = tonumber(localManifest and localManifest.build) or 0,
+        remoteBuild = tonumber(manifest.build) or 0,
+        manifest = manifest
+    }
+end
+
 function Remote.check(config, localManifest)
     local manifest, err = Remote.fetchManifest(config)
     if not manifest then return nil, err end
-    local localBuild = tonumber(localManifest and localManifest.build) or 0
-    local remoteBuild = tonumber(manifest.build) or 0
-    return {
-        available = remoteBuild > localBuild,
-        localVersion = tostring(localManifest and localManifest.version or "unknown"),
-        remoteVersion = tostring(manifest.version or "unknown"),
-        localBuild = localBuild,
-        remoteBuild = remoteBuild,
-        manifest = manifest
-    }
+    return Remote.compareManifests(localManifest, manifest)
 end
 
 return Remote

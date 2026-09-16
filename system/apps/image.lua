@@ -4,12 +4,32 @@ return function(E)
     local _ENV=env
 local ImageViewer={}
 function ImageViewer:init(path)
-    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.error=nil
+    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.nativeImage=nil; self.error=nil
     self.images=imageList()
     if type(path)=="string" and path~="" then self:loadPath(path) elseif self.images[1] then self:loadPath(self.images[1]) end
 end
+function ImageViewer:releaseNative()
+    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
+end
 function ImageViewer:loadPath(path)
-    local data,err=imageRead(path); self.error=nil
+    self:releaseNative(); self.error=nil
+    if tostring(path):lower():match("%.png$") then
+        local ok,body=pcall(readFile,path,cfg.maxImageDownload)
+        if not ok then self.error=tostring(body); mark(self.win); return false end
+        local native,nativeError=imageDecodeNativePng(body)
+        local availableW=max(1,(self.win and self.win.w or 530)-165); local availableH=max(1,(self.win and self.win.h or 282)-80)
+        if native and native.width<=availableW and native.height<=availableH then
+            self.path=path; self.data=nil; self.nativeImage=native; self.offsetX=0; self.offsetY=0; mark(self.win); return true
+        end
+        if native then imageFreeNativePng(native) end
+        local decoded,decodeError=pcall(pngDecode,body)
+        if decoded then
+            local data=imagePrepare(decodeError,availableW,availableH)
+            if data then self.path=path; self.data=data; self.offsetX=0; self.offsetY=0; mark(self.win); return true end
+        end
+        self.error="Image load failed: "..tostring(nativeError or decodeError); mark(self.win); return false
+    end
+    local data,err=imageRead(path)
     if not data then self.error=tostring(err); logLine("ERROR","Image load: "..self.error); mark(self.win); return false end
     self.path=path; self.data=data; self.offsetX=0; self.offsetY=0
     for i,v in ipairs(self.images or {}) do if v==path then self.selected=i end end
@@ -17,8 +37,8 @@ function ImageViewer:loadPath(path)
 end
 function ImageViewer:refreshList() self.images=imageList(); self.selected=clamp(self.selected,1,max(1,#self.images)); if self.images[self.selected] then self:loadPath(self.images[self.selected]) end end
 function ImageViewer:openDialog()
-    dialog("Open HCC Image","Absolute .hcci path",{"Open","Cancel"},function(b,value)
-        if b=="Open" then if not value:lower():match("%.hcci$") then value=value..".hcci" end; self:loadPath(value) end
+    dialog("Open Image","Absolute .hcci or .png path",{"Open","Cancel"},function(b,value)
+        if b=="Open" then self:loadPath(value) end
     end,self.path or "/.hccos/images/image.hcci")
 end
 function ImageViewer:saveAs()
@@ -77,7 +97,8 @@ function ImageViewer:draw(c)
     local left=155; c:line(left,31,left,c.h-28,P.border)
     local rows=max(1,floor((c.h-70)/17)); for i=1,min(rows,#self.images) do local y=34+(i-1)*17; if i==self.selected then c:filledRectangle(4,y,left-9,16,P.panelBackground) end; c:text(8,y+3,fs.getName(self.images[i]):sub(1,20),P.textPrimary) end
     local preview=c:clipping(left+5,33,c.w-left-10,c.h-62); Widget.panel(preview,0,0,preview.w,preview.h,0xFF050505,P.border)
-    if self.data then drawImage(preview,self.data,2,2,preview.w-4,preview.h-4,self.mode,self.zoom,self.offsetX,self.offsetY)
+    if self.nativeImage then preview:nativeImage(2,2,self.nativeImage,"center")
+    elseif self.data then drawImage(preview,self.data,2,2,preview.w-4,preview.h-4,self.mode,self.zoom,self.offsetX,self.offsetY)
     elseif self.error then preview:paragraph(8,18,"Image error: "..self.error,P.error,preview.w-16,4)
     else preview:text(8,18,"Open an HCC Image (.hcci)",P.textSecondary) end
     button(self,c,left+5,c.h-24,45,"FILL",function() self.mode="fill"; self.zoom=1; mark(self.win) end)
@@ -88,6 +109,7 @@ function ImageViewer:draw(c)
     button(self,c,left+247,c.h-24,75,"WALLPAPER",function() self:setWallpaper() end)
     c:text(6,c.h-13,"F5 refresh  arrows pan  PgUp/PgDn zoom",P.textSecondary)
 end
+function ImageViewer:close() self:releaseNative() end
 register("image","Image Viewer","IM",530,282,ImageViewer)
 
 end

@@ -2,9 +2,10 @@ return {
     product = "HCC OS",
     version = "1.4.0",
     build = 1400,
+    revision = "20260916-1",
     edition = "Tom's Peripherals",
     channel = "stable",
-    installedSize = 300000,
+    installedSize = 320000,
     startupSize = 4078,
     maxFileSize = 40000,
     files = {

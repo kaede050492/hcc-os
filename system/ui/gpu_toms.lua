@@ -184,6 +184,56 @@ function Driver.drawTextSmart(x,y,value,color,scale,clip)
         Driver.text({bounds=bounds,value=ascii(value),color=color,scale=scale})
     end
 end
+function Driver.nativePngAvailable()
+    return gpu and type(gpu.newBuffer)=="function" and type(gpu.decodeImage)=="function" and type(gpu.drawImage)=="function"
+end
+function Driver.decodePng(body)
+    if type(body)~="string" or #body==0 then return nil,"empty PNG data" end
+    if not Driver.nativePngAvailable() then return nil,"Tom's GPU native PNG API unavailable" end
+    local buffer,image
+    local ok,result=pcall(function()
+        buffer=gpu.newBuffer()
+        if type(buffer)~="table" or type(buffer.write)~="function" or type(buffer.ref)~="function" then error("Tom's GPU byte buffer API unavailable") end
+        for first=1,#body,512 do
+            local bytes={body:byte(first,min(#body,first+511))}
+            buffer.write(unpack(bytes))
+        end
+        image=gpu.decodeImage(buffer.ref())
+        if type(image)~="table" or type(image.ref)~="function" or type(image.getWidth)~="function" or type(image.getHeight)~="function" then error("Tom's GPU returned an invalid image") end
+        local width,height=image.getWidth(),image.getHeight()
+        if not (finite(width) and finite(height) and width>0 and height>0) then error("Tom's GPU image dimensions are invalid") end
+        local reference=image.ref()
+        if type(reference)~="string" or reference=="" then error("Tom's GPU image reference is invalid") end
+        return {native=true,ref=reference,width=floor(width),height=floor(height),image=image,buffer=buffer}
+    end)
+    if buffer and type(buffer.free)=="function" then pcall(buffer.free) end
+    if not ok then
+        if image and type(image.free)=="function" then pcall(image.free) end
+        return nil,tostring(result)
+    end
+    return result
+end
+function Driver.freeNativeImage(record)
+    if type(record)~="table" or record.freed then return end
+    record.freed=true
+    if record.image and type(record.image.free)=="function" then pcall(record.image.free) end
+end
+function Driver.nativeImageFits(record,x,y,clip)
+    if type(record)~="table" or record.freed or not (finite(record.width) and finite(record.height)) then return false end
+    local r=intersect(box(x,y,record.width,record.height),clip or box(0,0,Driver.w,Driver.h))
+    return r and r.x==x and r.y==y and r.w==record.width and r.h==record.height
+end
+function Driver.drawNativeImage(x,y,record,clip)
+    if not Driver.nativeImageFits(record,x,y,clip) or not gpu or type(gpu.drawImage)~="function" then return false end
+    local ok,err=pcall(gpu.drawImage,x+1,y+1,record.ref)
+    if not ok then
+        Driver.error="Tom's GPU drawImage failed: "..tostring(err)
+        if context and context.logger then pcall(context.logger.warn,context.logger,Driver.error) end
+        return false
+    end
+    Driver.calls=Driver.calls+1
+    return true
+end
 E.Driver=Driver; E.devices=devices; E.scanDevices=scanDevices; E.clipLine=clipLine
 E.gpuAvailable=function() return gpu~=nil end
 E.shutdownDisplay=function() if gpu then Driver.clear(0xFF000000); Driver.sync() end end

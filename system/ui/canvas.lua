@@ -43,6 +43,14 @@ function Canvas:text(x,y,s,color,scale)
     end
     if #out>0 then self.list[#self.list+1]={kind="text",bounds=box(start,y,width,height),value=table.concat(out),color=color or P.textPrimary,scale=scale} end
 end
+function Canvas:nativeImage(x,y,record,mode)
+    if type(record)~="table" or not (finite(record.width) and finite(record.height)) then return false end
+    local px,py=floor(self.x+x),floor(self.y+y)
+    if mode=="center" or mode=="fit" then px=px+floor((self.w-record.width)/2); py=py+floor((self.h-record.height)/2) end
+    if not Driver.nativeImageFits(record,px,py,self.clip) then return false end
+    self.list[#self.list+1]={kind="native_image",bounds=box(px,py,record.width,record.height),record=record}
+    return true
+end
 function Canvas:paragraph(x,y,s,color,maxWidth,maxRows)
     local width=maxWidth or self.w-x; local row=""; local count=0
     for word in (ascii(s).." "):gmatch("(%S+)%s+") do
@@ -57,4 +65,3 @@ end
 E.Canvas=Canvas; E.canvas=canvas
 
 end
-

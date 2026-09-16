@@ -97,7 +97,7 @@ local function render()
         while changed do
             changed=false
             for _,list in ipairs(scene) do for _,cmd in ipairs(list) do
-                if cmd.kind=="text" and intersect(r,cmd.bounds) then
+                if (cmd.kind=="text" or cmd.kind=="native_image") and intersect(r,cmd.bounds) then
                     local u=union(r,cmd.bounds)
                     if u.x~=r.x or u.y~=r.y or u.w~=r.w or u.h~=r.h then r=u; changed=true end
                 end
@@ -117,6 +117,7 @@ local function render()
                 if cmd.kind=="fill" then local b=cmd.bounds; Driver.filledRectangle(b.x,b.y,b.w,b.h,cmd.color,r)
                 elseif cmd.kind=="line" then Driver.line(cmd.a,cmd.b,cmd.c,cmd.d,cmd.color,r)
                 elseif cmd.kind=="text" then Driver.text(cmd) end
+                if cmd.kind=="native_image" then Driver.drawNativeImage(cmd.bounds.x,cmd.bounds.y,cmd.record,r) end
             end
         end end
         if OS.pointer.visible and intersect(r,cursorRect()) then

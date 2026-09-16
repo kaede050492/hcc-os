@@ -147,7 +147,20 @@ function Web:progressV131(stage,value)
     self.status=finite(value) and stage.." "..tostring(clamp(floor(value*100+0.5),0,100)).."%" or stage; self:markV131()
 end
 function Web:showImageV131(data,path,url,cacheHit)
+    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
     self.pageMode="image"; self.imageData=data; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view",cacheHit and "Loaded from Image Cache" or "PNG/JPEG converted to HCCI v2"}; self.status=cacheHit and "Image Cache hit" or "Image ready"; self:markV131()
+end
+function Web:showNativeImageV131(native,path,url)
+    if self.nativeImage and self.nativeImage~=native then imageFreeNativePng(self.nativeImage) end
+    self.pageMode="image"; self.imageData=nil; self.nativeImage=native; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view","PNG decoded by Tom's GPU"}; self.status="Native PNG ready"; self:markV131()
+end
+function Web:finishNativeImageV131(item,native,path,url)
+    self.nativeTempPaths=self.nativeTempPaths or {}; self.nativeTempPaths[path]=true
+    if item then
+        item.nativeImage=native; item.path=path; item.status="native ready"; webImageStatusLine(self.lines,item.index,item.status); self.job=nil; self:progressV131("Rendering...",1); self:queueNextImageV131()
+    else
+        self.job=nil; self:showNativeImageV131(native,path,url)
+    end
 end
 function Web:finishImageV131(item,data,cacheKey,alias)
     local saved,err=imageCacheSave(alias,data); if saved and cacheKey~=alias then imageCacheSave(cacheKey,data) end
@@ -158,10 +171,21 @@ end
 function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     local kind=self:imageKindV131(url,ctype); if not kind then return false,"unsupported image type" end
     local alias=self:cacheAliasV131(url,targetW,targetH); local exact=self:cacheKeyV131(url,targetW,targetH,ctype,length); local cached=imageCacheLoad(alias)
+    if kind=="png" then
+        local native,nativeError=imageDecodeNativePng(body)
+        if native and native.width<=targetW-4 and native.height<=targetH-4 then
+            local path,stageError=imageStageNativePng(body,url)
+            if path then self:finishNativeImageV131(item,native,path,url); return true end
+            imageFreeNativePng(native); nativeError=stageError
+        elseif native then
+            imageFreeNativePng(native); nativeError="native PNG exceeds the available viewport"
+        end
+        if nativeError then self.cacheNotice="Native PNG fallback: "..tostring(nativeError):sub(1,72) end
+    end
     if cached then if item then self:finishImageV131(item,cached,exact,alias) else self:showImageV131(cached,imageCachePath(alias),url,true) end; return true end
     local co=coroutine.create(function()
         local decoded
-        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG...",p) end)
+        if kind=="png" then decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG fallback...",p) end)
         elseif kind=="jpeg" then decoded=jpegDecode(body,function(p) coroutine.yield("Decoding JPEG...",p) end)
         else
             coroutine.yield("Decoding HCCI...",0.5); local ok,raw=pcall(textutils.unserialize,body); if not ok then error(raw) end; decoded=imageNormalize(raw); if not decoded then error("invalid HCCI image") end
@@ -226,19 +250,19 @@ function Web:queueNextImageV131()
     if #self.pageImages>0 then self.status="Page ready / images loaded"; self:markV131() end
 end
 function Web:initV131(url)
-    self.url=""; self.status="Ready"; self.title="HCC Web"; self.lines={"Enter an HTTP/HTTPS URL and press GO."}; self.links={}; self.linkSelected=1; self.top=1; self.body=""; self.history={}; self.historyIndex=0; self.job=nil; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.imageIndex=1; self.cacheNotice=""
+    self.url=""; self.status="Ready"; self.title="HCC Web"; self.lines={"Enter an HTTP/HTTPS URL and press GO."}; self.links={}; self.linkSelected=1; self.top=1; self.body=""; self.history={}; self.historyIndex=0; self.job=nil; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.nativeImage=nil; self.nativeTempPaths={}; self.imagePath=nil; self.imageIndex=1; self.cacheNotice=""
     if type(url)=="string" and url~="" then self:loadV131(url,true) end
 end
 function Web:loadV131(url,record)
     url=webSafeUrl(url); if not url then self.status="Invalid URL"; self.lines={"Only http:// and https:// URLs are allowed."}; self:markV131(); return false end
-    self:cancelJobV131(); self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
+    self:cancelJobV131(); if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then imageFreeNativePng(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do imageDeleteNativePng(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
     if record~=false then for i=#self.history,self.historyIndex+1,-1 do table.remove(self.history,i) end; self.history[#self.history+1]=url; self.historyIndex=#self.history end
-    local kind=self:imageKindV131(url,""); if kind then local tw=min(576,self.win and self.win.w or 576); local th=min(320,self.win and self.win.h or 320); local alias=self:cacheAliasV131(url,tw,th); local cached=imageCacheLoad(alias); if cached then self:showImageV131(cached,imageCachePath(alias),url,true); return true end end
+    local kind=self:imageKindV131(url,""); if kind then local tw=max(64,min(576,(self.win and self.win.w or 576)-14)); local th=max(64,min(320,(self.win and self.win.h or 320)-TITLE-115)); local alias=self:cacheAliasV131(url,tw,th); local cached=imageCacheLoad(alias); if cached then self:showImageV131(cached,imageCachePath(alias),url,true); return true end end
     local ok,err=self:startRequestV131(url,"page",nil,nil,nil); if not ok then self.status=tostring(err); self.lines={tostring(err)}; self:markV131(); return false end; self:markV131(); return true
 end
 function Web:cancel() self:cancelJobV131("Cancelled") end
 function Web:clearCacheV131() local ok,err=imageCacheClear(); self.cacheNotice=ok and "Image cache cleared" or tostring(err); notify(self.cacheNotice,ok and P.success or P.error); self:markV131() end
-function Web:openImageV131() if not self.imageData then return end; local w=openApp("image"); if w and self.imagePath then appCall(w,"loadPath",self.imagePath) elseif self.imageData then notify("Save the image as HCCI first",P.warning) end end
+function Web:openImageV131() if not self.imageData and not self.nativeImage then return end; local w=openApp("image"); if w and self.imagePath then appCall(w,"loadPath",self.imagePath) elseif self.imageData then notify("Save the image as HCCI first",P.warning) end end
 function Web:saveHcciV131()
     if not self.imageData then return end
     dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,"/.hccos/images/web_image.hcci")
@@ -249,17 +273,25 @@ function Web:setWallpaperV131()
     cfg.wallpaperPath=path; cfg.wallpaperMode="fit"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty(); if ok then notify("Wallpaper set from converted HCCI",P.success) else errorBox(err) end
 end
 function Web:downloadV131() Web.download(self) end
-function Web:closeV131() self:cancelJobV131() end
+function Web:closeV131()
+    self:cancelJobV131()
+    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
+    for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then imageFreeNativePng(item.nativeImage); item.nativeImage=nil end end
+    for path in pairs(self.nativeTempPaths or {}) do imageDeleteNativePng(path) end
+    self.nativeTempPaths={}
+end
 function Web:drawV131(c)
     c:text(6,5,"HCC WEB",P.accent); c:text(6,19,self.title:sub(1,42),P.textPrimary)
     button(self,c,5,33,42,"BACK",function() self:back() end); button(self,c,51,33,48,"FORWARD",function() self:forward() end); button(self,c,103,33,48,"RELOAD",function() self:reload() end); button(self,c,156,33,39,"GO",function() self:goDialog() end); button(self,c,200,33,72,"DOWNLOAD",function() self:downloadV131() end); button(self,c,277,33,48,"CACHE",function() self:clearCacheV131() end); button(self,c,330,33,58,"CANCEL",function() self:cancel() end)
     local uw=max(20,c.w-10); c:filledRectangle(5,52,uw,15,P.panelBackground); c:rectangle(5,52,uw,15,P.border); c:text(9,55,self.url=="" and "URL / SEARCH" or self.url,P.textPrimary); c:text(6,70,self.status,P.textSecondary); c:line(0,76,c.w-1,76,P.border)
-    if self.pageMode=="image" and self.imageData then
-        local pv=c:clipping(5,82,c.w-10,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border); drawImage(pv,self.imageData,2,2,pv.w-4,pv.h-4,"fit",1,0,0); button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,"SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
+    if self.pageMode=="image" and (self.imageData or self.nativeImage) then
+        local pv=c:clipping(5,82,c.w-10,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border)
+        if self.nativeImage then pv:nativeImage(2,2,self.nativeImage,"center") else drawImage(pv,self.imageData,2,2,pv.w-4,pv.h-4,"fit",1,0,0) end
+        button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,"SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
     else
         local pw=175; local lw=max(30,c.w-pw-12); local rows=max(1,floor((c.h-111)/12)); self.top=clamp(self.top,1,max(1,#self.lines-rows+1)); local body=c:clipping(5,82,lw,rows*12+2); Widget.panel(body,0,0,body.w,body.h,0xFF050505,P.border)
         for i=0,rows-1 do local line=self.lines[self.top+i]; if not line then break end; body:text(3,3+i*12,line,P.textPrimary) end
-        local pv=c:clipping(c.w-pw-3,82,pw,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border); local item=self.pageImages and self.pageImages[self.imageIndex]; if item and item.data then drawImage(pv,item.data,2,2,pv.w-4,pv.h-25,"fit",1,0,0); pv:text(4,pv.h-17,"IMG "..self.imageIndex.."/"..#self.pageImages,P.textSecondary) else pv:paragraph(6,16,"Images load after page text.",P.textSecondary,pv.w-12,2) end
+        local pv=c:clipping(c.w-pw-3,82,pw,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border); local item=self.pageImages and self.pageImages[self.imageIndex]; if item and item.nativeImage then pv:nativeImage(2,2,item.nativeImage,"center"); pv:text(4,pv.h-17,"IMG "..self.imageIndex.."/"..#self.pageImages,P.textSecondary) elseif item and item.data then drawImage(pv,item.data,2,2,pv.w-4,pv.h-25,"fit",1,0,0); pv:text(4,pv.h-17,"IMG "..self.imageIndex.."/"..#self.pageImages,P.textSecondary) else pv:paragraph(6,16,"Images load after page text.",P.textSecondary,pv.w-12,2) end
         button(self,c,c.w-pw-1,c.h-25,47,"NEXT",function() self.imageIndex=self.imageIndex%max(1,#self.pageImages)+1; mark(self.win) end); c:text(6,c.h-14,string.format("%d lines  %d links  %d images  Q cancel",#self.lines,#self.links,#self.pageImages),P.textSecondary)
     end
 end

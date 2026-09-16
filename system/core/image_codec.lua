@@ -589,6 +589,7 @@ imageToStored=function(data)
     local _,stored=imageQuantize(data or {width=1,height=1,pixels={0xFF000000}},16); return stored
 end
 local imageCacheDir="/.hccos/cache/images"
+local nativePngTempDir="/.hccos/temp/images"
 local function imageHash(value)
     local hash=2166136261; for i=1,#value do hash=(hash*16777619+value:byte(i))%4294967296 end; return string.format("%08x",hash)
 end
@@ -619,6 +620,36 @@ function imageCacheClear()
     if not fs.exists(imageCacheDir) then return true end
     local ok,err=pcall(function() for _,name in ipairs(fs.list(imageCacheDir)) do local path=fs.combine(imageCacheDir,name); if not fs.isDir(path) then fs.delete(path) end end end); return ok,err
 end
+local function imageDecodeNativePng(body)
+    if type(Driver)~="table" or type(Driver.decodePng)~="function" then return nil,"Tom's GPU native PNG backend unavailable" end
+    return Driver.decodePng(body)
+end
+local function imageLoadNativePng(path,limit)
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid PNG path" end
+    local ok,body=pcall(readFile,path,limit or cfg.maxImageDownload)
+    if not ok then return nil,tostring(body) end
+    return imageDecodeNativePng(body)
+end
+local function imageStageNativePng(body,key)
+    if type(body)~="string" or #body==0 then return nil,"empty PNG data" end
+    local ok,pathOrError=pcall(function()
+        if not fs.exists(nativePngTempDir) then fs.makeDir(nativePngTempDir) end
+        local path=fs.combine(nativePngTempDir,imageHash(tostring(key or "png"))..".png")
+        local f,err=fs.open(path,"w"); if not f then error(err or "temporary PNG is not writable") end
+        local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
+        return path
+    end)
+    if not ok then return nil,tostring(pathOrError) end
+    return pathOrError
+end
+local function imageFreeNativePng(record)
+    if type(Driver)=="table" and type(Driver.freeNativeImage)=="function" then Driver.freeNativeImage(record) end
+end
+local function imageDeleteNativePng(path)
+    if type(path)~="string" or path:sub(1,#nativePngTempDir+1)~=nativePngTempDir.."/" then return false,"unsafe temporary PNG path" end
+    if fs.exists(path) then return pcall(fs.delete,path) end
+    return true
+end
 function imagePrepare(data,targetW,targetH,progress)
     targetW=max(1,min(576,floor(targetW or 576))); targetH=max(1,min(320,floor(targetH or 320))); local candidates={{1,"16"},{0.8333,"12"},{0.6667,"8"},{0.5,"8"}}; local lastData,lastStored,lastSize
     for _,candidate in ipairs(candidates) do
@@ -630,7 +661,7 @@ function imagePrepare(data,targetW,targetH,progress)
     return lastData,lastStored,lastSize
 end
 end
-E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath
+E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng
 E.resetWallpaperCache=function() wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil} end
 
 end

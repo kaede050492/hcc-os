@@ -74,8 +74,15 @@ function Updater:check()
         return nil, err
     end
     self.lastCheck = result
-    self.state.phase = result.available and "available" or "current"
-    self.state.message = result.available and ("Update "..result.remoteVersion.." is available") or "HCC OS is up to date"
+    if result.available then
+        self.state.phase, self.state.message = "available", "Update available"
+    elseif result.refreshAvailable then
+        self.state.phase, self.state.message = "refresh_available", "Same version - refresh available"
+    elseif result.downgradeBlocked then
+        self.state.phase, self.state.message = "current", "Remote revision is older; downgrade blocked"
+    else
+        self.state.phase, self.state.message = "current", "HCC OS is up to date"
+    end
     self.logger:info("Update check: "..self.state.message)
     return result
 end
@@ -104,16 +111,15 @@ function Updater:handleHttpSuccess(url, handle)
     if not ok then self.state.phase, self.state.message = "offline", "Manifest read failed"; return true end
     local manifest, err = self.remote.parseManifest(body or "")
     if not manifest then self.state.phase, self.state.message = "offline", tostring(err); return true end
-    local localBuild = tonumber(self.localManifest and self.localManifest.build) or 0
-    local remoteBuild = tonumber(manifest.build) or 0
-    self.lastCheck = {
-        available=remoteBuild > localBuild,
-        localVersion=tostring(self.localManifest and self.localManifest.version or "unknown"),
-        remoteVersion=tostring(manifest.version or "unknown"),
-        localBuild=localBuild, remoteBuild=remoteBuild, manifest=manifest
-    }
-    self.state.phase = self.lastCheck.available and "available" or "current"
-    self.state.message = self.lastCheck.available and ("Update "..self.lastCheck.remoteVersion.." is available") or "HCC OS is up to date"
+    local result = self.remote.compareManifests(self.localManifest, manifest)
+    if not result then self.state.phase, self.state.message = "offline", "Manifest comparison failed"; return true end
+    -- The manifest was already retrieved asynchronously. Compare it without a
+    -- second HTTP request so a same-version refresh remains non-blocking.
+    self.lastCheck=result
+    if self.lastCheck.available then self.state.phase,self.state.message="available","Update available"
+    elseif self.lastCheck.refreshAvailable then self.state.phase,self.state.message="refresh_available","Same version - refresh available"
+    elseif self.lastCheck.downgradeBlocked then self.state.phase,self.state.message="current","Remote revision is older; downgrade blocked"
+    else self.state.phase,self.state.message="current","HCC OS is up to date" end
     self.logger:info("Background update check: "..self.state.message)
     return true
 end
