@@ -50,6 +50,8 @@ function Updater.new(paths, config, logger, remote)
     self.localManifest = readLocalManifest(paths.manifest)
     self.state = {phase="idle", current="", completed=0, total=0, message="Ready"}
     self.cancelled = false
+    self.checkJob = nil
+    self.downloadJob = nil
     return self
 end
 
@@ -65,6 +67,7 @@ function Updater:cleanup()
     -- job makes its eventual response harmless instead of reviving cancelled
     -- update state after the user has moved on.
     self.checkJob = nil
+    self.downloadJob = nil
     if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
     self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
 end
@@ -93,6 +96,7 @@ end
 
 function Updater:beginAsyncCheck()
     if self.checkJob then return false, "Update check already in progress" end
+    if self.downloadJob then return false, "Download already in progress" end
     if self.state.phase == "downloading" or self.state.phase == "ready" then
         return false, "Finish or cancel the current update first"
     end
@@ -108,13 +112,38 @@ function Updater:beginAsyncCheck()
 end
 
 function Updater:handleHttpSuccess(url, handle)
+    if self.downloadJob and self.downloadJob.url == url then
+        local job = self.downloadJob
+        local ok, body = false, "Invalid HTTP response handle"
+        if type(handle) == "table" and type(handle.readAll) == "function" then ok, body = pcall(handle.readAll) end
+        if type(handle) == "table" and type(handle.close) == "function" then pcall(handle.close) end
+        self.downloadJob = nil
+        if not ok then
+            self:cleanup()
+            self.state.phase, self.state.message = "failed", "Download response could not be read"
+            self.logger:error(self.state.message.." ("..job.file.path..")")
+            return true
+        end
+        local staged, stageError = self:stageDownloadedFile(job.file, body)
+        if not staged then
+            self:cleanup()
+            self.state.phase, self.state.message = "failed", "Download failed: "..tostring(stageError)
+            self.logger:error(self.state.message.." ("..job.file.path..")")
+            return true
+        end
+        self.state.completed = self.fileIndex
+        self.state.current = ""
+        self.state.message = string.format("Downloaded %d/%d", self.state.completed, self.state.total)
+        return true
+    end
     if not self.checkJob or self.checkJob.url ~= url then
         -- Leave unrelated HCC Web handles untouched; the desktop dispatcher
         -- forwards this event to the Web app when it is not ours.
         return false
     end
-    local ok, body = pcall(handle.readAll)
-    if handle.close then pcall(handle.close) end
+    local ok, body = false, "Invalid HTTP response handle"
+    if type(handle) == "table" and type(handle.readAll) == "function" then ok, body = pcall(handle.readAll) end
+    if type(handle) == "table" and type(handle.close) == "function" then pcall(handle.close) end
     self.checkJob = nil
     if not ok then self.state.phase, self.state.message = "offline", "Manifest read failed"; return true end
     local manifest, err = self.remote.parseManifest(body or "")
@@ -133,6 +162,15 @@ function Updater:handleHttpSuccess(url, handle)
 end
 
 function Updater:handleHttpFailure(url, reason)
+    if self.downloadJob and self.downloadJob.url == url then
+        local file = self.downloadJob.file
+        self.downloadJob = nil
+        self:cleanup()
+        self.state.phase = "failed"
+        self.state.message = "Download failed: "..tostring(reason or "HTTP request failed")
+        self.logger:error(self.state.message.." ("..file.path..")")
+        return true
+    end
     if not self.checkJob or self.checkJob.url ~= url then return false end
     self.checkJob = nil
     self.state.phase, self.state.message = "offline", tostring(reason or "HTTP request failed")
@@ -160,6 +198,7 @@ end
 
 function Updater:begin(manifest, repairOnly)
     if self.checkJob then return false, "Update check still in progress" end
+    if self.downloadJob then return false, "Download already in progress" end
     local files, err = manifestFiles(manifest)
     if not files then return false, err end
     if repairOnly then
@@ -186,9 +225,29 @@ function Updater:begin(manifest, repairOnly)
     return true
 end
 
+function Updater:stageDownloadedFile(file, body)
+    if type(body) ~= "string" then return false, "Downloaded response is not text data" end
+    if file.size and #body ~= file.size then return false, "Downloaded size mismatch: "..file.path end
+    local maximum = math.max(1, tonumber(self.manifest and self.manifest.maxFileSize) or 40000)
+    local installed = math.max(maximum, tonumber(self.manifest and self.manifest.installedSize) or maximum)
+    if #body > maximum or self.downloadedBytes + #body > installed then
+        return false, "Downloaded data exceeds manifest storage limits"
+    end
+    local target = fs.combine(self.paths.updateTemp, file.path)
+    ensureParent(target)
+    local f, openError = fs.open(target, "w")
+    if not f then return false, openError end
+    local ok, writeError = pcall(f.write, body)
+    f.close()
+    if not ok then return false, writeError end
+    self.downloadedBytes = self.downloadedBytes + #body
+    return true
+end
+
 function Updater:step()
     if self.state.phase ~= "downloading" then return self.state.phase == "ready" end
     if self.cancelled then self:cleanup(); return false end
+    if self.downloadJob then return true end
     self.fileIndex = self.fileIndex + 1
     local file = self.files[self.fileIndex]
     if not file then
@@ -198,32 +257,18 @@ function Updater:step()
         return true
     end
     self.state.current = file.path
-    local body, err = self.remote.fetch(self.remote.fileUrl(file.path, self.config.data))
-    if not body then
-        self.state.phase, self.state.message = "failed", "Download failed: "..tostring(err)
-        self.logger:error(self.state.message.." ("..file.path..")")
-        self:cleanup()
-        self.state.phase, self.state.message = "failed", "Download failed: "..tostring(err)
-        return false, err
+    if type(http) ~= "table" or type(http.request) ~= "function" then
+        self:cleanup(); self.state.phase, self.state.message = "failed", "HTTP request API unavailable"
+        return false, self.state.message
     end
-    if file.size and #body ~= file.size then
-        self:cleanup(); return false, "Downloaded size mismatch: "..file.path
+    local url = self.remote.fileUrl(file.path, self.config.data)
+    local requested, accepted = pcall(http.request, url)
+    if not requested or accepted == false or accepted == nil then
+        self:cleanup(); self.state.phase, self.state.message = "failed", "Download request was denied"
+        return false, self.state.message
     end
-    local maximum = math.max(1, tonumber(self.manifest and self.manifest.maxFileSize) or 40000)
-    local installed = math.max(maximum, tonumber(self.manifest and self.manifest.installedSize) or maximum)
-    if #body > maximum or self.downloadedBytes + #body > installed then
-        self:cleanup(); return false, "Downloaded data exceeds manifest storage limits"
-    end
-    local target = fs.combine(self.paths.updateTemp, file.path)
-    ensureParent(target)
-    local f, openError = fs.open(target, "w")
-    if not f then self:cleanup(); return false, openError end
-    local ok, writeError = pcall(f.write, body)
-    f.close()
-    if not ok then self:cleanup(); return false, writeError end
-    self.downloadedBytes = self.downloadedBytes + #body
-    self.state.completed = self.fileIndex
-    self.state.message = string.format("Downloaded %d/%d", self.state.completed, self.state.total)
+    self.downloadJob = {url=url, file=file}
+    self.state.message = "Waiting for "..file.path
     return true
 end
 
