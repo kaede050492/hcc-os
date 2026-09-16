@@ -19,13 +19,57 @@ local function playerColor(name)
     return playerColors[n%#playerColors+1]
 end
 local Radar={}
-function Radar:init() self.players={}; self.dim=dimension(cfg.dimension); self.dims={self.dim}; self.page=1; self.range=256; self:update() end
-function Radar:interval() return self.query and 0.05 or cfg.radarInterval end
+function Radar:init()
+    -- Never call a peripheral during window creation.  Some Player Detector
+    -- implementations can wait on the server thread, which used to make a
+    -- desktop icon tap look like a frozen OS before the window was painted.
+    self.players={}; self.dim=dimension(cfg.dimension); self.dims={self.dim}; self.page=1; self.range=256
+    self.query=nil; self.scanRequested=false; self.errorShown=false
+    if devices.detector then
+        self.message="Player Detector ready. Press SCAN to read players."
+    else
+        self:detectorError("Player Detector is not connected.")
+    end
+end
+function Radar:interval() return (self.query or self.scanRequested) and 0.05 or cfg.radarInterval end
+function Radar:detectorError(message)
+    self.query=nil; self.scanRequested=false; self.players={}; self.message=message or "Player Detector error"
+    if not self.errorShown and type(dialog)=="function" then
+        self.errorShown=true
+        dialog("Player Detector Error",self.message.." Connect the peripheral and press SCAN again.",{"OK"})
+    end
+    mark(self.win)
+end
+function Radar:requestScan()
+    self.errorShown=false; self.message="Scanning Player Detector..."; self.scanRequested=true; self.query=nil; self.players={}
+    if not devices.detector then self:detectorError("Player Detector is not connected."); return end
+    mark(self.win)
+end
 function Radar:update()
     local detector=devices.detector
-    if not detector then self.query=nil; self.players={}; self.message="Player Detector unavailable"; mark(self.win); return end
+    if self.scanRequested then
+        self.scanRequested=false
+        if not detector then self:detectorError("Player Detector is not connected."); return end
+        local good,names=pcall(detector.getOnlinePlayers)
+        if not good then self:detectorError("Could not read online players: "..tostring(names)); return end
+        if type(names)~="table" then self:detectorError("Player Detector returned invalid player data."); return end
+        local cleanNames={}
+        for _,name in ipairs(names) do
+            if type(name)=="string" and name~="" and #cleanNames<128 then cleanNames[#cleanNames+1]=name end
+        end
+        names=cleanNames
+        table.sort(names); self.online=#names; self.unavailable=0; self.far=0; self.message=nil
+        self.query={detector=detector,names=names,index=1,players={},unavailable=0,far=0,
+            dims={[dimension(cfg.dimension)]=true,[self.dim]=true}}
+        if #names==0 then
+            self.players={}; self.query=nil; self.dims={self.dim}; self.range=256; self.message="No players are currently online."
+            mark(self.win); return
+        end
+        mark(self.win); return
+    end
+    if not detector then self:detectorError("Player Detector is not connected."); return end
     if self.query then
-        if self.query.detector~=detector then self.query=nil; return end
+        if self.query.detector~=detector then self:detectorError("Player Detector changed during the scan."); return end
         local name=self.query.names[self.query.index]
         if name then
             local good,p=pcall(detector.getPlayerPos,name)
@@ -36,44 +80,44 @@ function Radar:update()
                     local distance=math.sqrt(dx*dx+dz*dz); self.query.far=max(self.query.far,distance)
                     self.query.players[#self.query.players+1]={name=name,x=p.x,y=p.y,z=p.z,yaw=p.yaw,distance=distance,color=playerColor(name)}
                 end
-            else self.query.unavailable=self.query.unavailable+1 end
+            else
+                self.query.unavailable=self.query.unavailable+1
+                if not good then self:detectorError("Could not read position for "..tostring(name)..": "..tostring(p)); return end
+                if type(p)~="table" or not finite(p.x) or not finite(p.z) then
+                    self:detectorError("Player Detector returned an invalid position for "..tostring(name).."."); return
+                end
+            end
             self.query.index=self.query.index+1; return
         end
         self.players=self.query.players; self.unavailable=self.query.unavailable; self.far=self.query.far
         self.dims={}; for d in pairs(self.query.dims) do self.dims[#self.dims+1]=d end; table.sort(self.dims)
         self.range=rangeFor(self.far); self.query=nil; mark(self.win); return
     end
-    self.players={}; self.unavailable=0; self.online=0; self.message=nil
-    local ok,names=pcall(detector.getOnlinePlayers)
-    if not ok or type(names)~="table" then self.message="Detector read failed"; mark(self.win); return end
-    table.sort(names); self.online=#names
-    self.query={detector=detector,names=names,index=1,players={},unavailable=0,far=0,
-        dims={[dimension(cfg.dimension)]=true,[self.dim]=true}}
-    -- An empty server is a valid detector response.  Do not recurse here:
-    -- calling update() again for an empty list caused an infinite recursion
-    -- when Player Detector was connected but no players were online.
-    if #names==0 then
-        self.players={}; self.query=nil; self.dims={self.dim}; self.range=256
-        mark(self.win)
-        return
-    end
-    mark(self.win)
+    -- Scanning is explicit. Keep the idle path passive so opening the app or
+    -- waiting on its timer can never call the peripheral.
+    return
 end
 function Radar:cycleDimension()
     if #self.dims==0 then self.dims={self.dim} end
     local index=1; for i,d in ipairs(self.dims) do if d==self.dim then index=i end end
-    self.dim=self.dims[index%#self.dims+1]; self.page=1; self:update()
+    self.dim=self.dims[index%#self.dims+1]; self.page=1; self:requestScan()
 end
 function Radar:onKey(k)
     if k==keys.g then cfg.grid=not cfg.grid; mark(self.win)
     elseif k==keys.d then self:cycleDimension()
+    elseif k==keys.r then self:requestScan()
     elseif k==keys.right or k==keys.pageDown then self.page=self.page+1; mark(self.win)
     elseif k==keys.left or k==keys.pageUp then self.page=max(1,self.page-1); mark(self.win) end
 end
 function Radar:onMouse(kind,x,y,b) if kind=="scroll" then self.page=max(1,self.page+b); mark(self.win) end end
 function Radar:draw(c)
     c:text(6,5,self.dim,P.accent)
-    if self.message then c:paragraph(8,30,self.message,P.warning); return end
+    if self.message and not self.query then
+        c:paragraph(8,30,self.message,self.errorShown and P.error or P.warning,c.w-16,4)
+        button(self,c,5,c.h-23,58,"SCAN",function() self:requestScan() end)
+        c:text(69,c.h-19,"R: SCAN  D: DIM  G: GRID",P.textSecondary)
+        return
+    end
     c:text(6,18,string.format("%d HERE / %d ONLINE  +/- %d",#self.players,self.online,self.range),P.textSecondary)
     local listWidth=c.w>=340 and 146 or (c.w>=240 and 105 or 0)
     local map=c:clipping(5,34,c.w-listWidth-10,c.h-62)
@@ -124,9 +168,10 @@ function Radar:draw(c)
         end
         list:text(0,list.h-12,self.page.."/"..pages.."  ARROWS",P.textSecondary)
     end
-    button(self,c,5,c.h-23,60,"D: DIM",function() self:cycleDimension() end)
-    button(self,c,69,c.h-23,63,cfg.grid and "G: GRID+" or "G: GRID-",function() self:onKey(keys.g) end)
-    c:text(139,c.h-19,"X"..cfg.centerX.." Z"..cfg.centerZ,P.textSecondary)
+    button(self,c,5,c.h-23,58,"SCAN",function() self:requestScan() end)
+    button(self,c,67,c.h-23,58,"D: DIM",function() self:cycleDimension() end)
+    button(self,c,129,c.h-23,63,cfg.grid and "G: GRID+" or "G: GRID-",function() self:onKey(keys.g) end)
+    c:text(199,c.h-19,"X"..cfg.centerX.." Z"..cfg.centerZ,P.textSecondary)
 end
 register("radar","Player Radar","RA",336,268,Radar)
 E.dimension=dimension
