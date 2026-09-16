@@ -23,7 +23,7 @@ local function boot()
         "STARTING DESKTOP..."}
     for i,line in ipairs(lines) do c:text(x,y+30+(i-1)*14,line,P.textPrimary) end
     for _,cmd in ipairs(list) do Driver.text(cmd) end
-    Driver.sync(); sleep(0.25)
+    Driver.sync()
     if not fs.exists(configPath) then local ok,err=saveConfig(); if not ok then configWarning=tostring(err) end end
     if not fs.exists(currencyPath) then local ok,err=currencySave(); if not ok then currencyWarning=tostring(err) end end
     allDirty()
@@ -33,6 +33,7 @@ local function boot()
     elseif HCCV14 and HCCV14.autoUpdatePending then openApp("updates") end
     if configWarning then notify(configWarning,P.warning)
     else notify("HCC OS ready / F1 menu / double-click an icon",P.accent) end
+    render()
     return true
 end
 local function run()

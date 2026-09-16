@@ -81,7 +81,7 @@ local function layers()
 end
 local function cursorRect() return box(OS.pointer.x,OS.pointer.y,9,13) end
 local function render()
-    if not gpu then return end
+    if not gpuAvailable() then return end
     if OS.desktopDirty then buildDesktop() end
     if OS.taskDirty then buildTask() end
     for _,w in ipairs(OS.windows) do if w.dirty and not w.minimized then buildWindow(w) end end
@@ -131,4 +131,3 @@ end
 E.buildWindow=buildWindow; E.buildOverlay=buildOverlay; E.layers=layers; E.cursorRect=cursorRect; E.render=render
 
 end
-
