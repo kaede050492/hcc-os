@@ -1,5 +1,5 @@
--- HCC OS v1.4 application catalog. Applications are loaded from the
--- corresponding system/apps module and are not executed through v1.3.3.
+-- HCC OS v1.5 application catalog. Applications are loaded from the
+-- corresponding system/apps module and are not executed through the legacy pack.
 
 return {
     {id="clock", name="Clock", source="module"},
@@ -22,5 +22,5 @@ return {
     {id="terminal", name="Terminal", source="module"},
     {id="settings", name="Settings", source="module"},
     {id="diagnostics", name="Diagnostics", source="module"},
-    {id="updates", module="update_recovery", name="Update & Recovery", source="v1.4"}
+    {id="updates", module="update_recovery", name="Update & Recovery", source="v1.5"}
 }

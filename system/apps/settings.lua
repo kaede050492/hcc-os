@@ -1,4 +1,4 @@
--- HCC OS v1.4 GUI application module.
+-- HCC OS v1.5 GUI application module.
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
     local _ENV=env
@@ -28,7 +28,7 @@ function Settings:init() self.selected=1; self.top=1 end
 function Settings:edit()
     local f=settingsFields[self.selected]
     if not f or f[3]=="section" or f[3]=="about" or f[3]=="storage" then return end
-    if f[3]=="action" then if HCCV14 then openApp("updates") else errorBox("Update service unavailable") end; return end
+    if f[3]=="action" then if HCCV15 or HCCV14 then openApp("updates") else errorBox("Update service unavailable") end; return end
     if f[3]=="restore" then
         if not HCCV14 then errorBox("Update service unavailable"); return end
         local ok,err=HCCV14.rollback(); if ok then notify("Previous version restored; restart HCC OS",P.success) else errorBox(err) end
@@ -88,7 +88,7 @@ function Settings:draw(c)
         else
             if i==self.selected then c:filledRectangle(5,y,c.w-10,17,P.panelBackground) end
             c:clipping(9,y+4,c.w*0.6-12,10):text(0,0,f[2],P.textSecondary)
-            local value=(f[3]=="action" and "OPEN") or (f[3]=="restore" and "RUN") or (f[3]=="about" and (HCC_VERSION_LABEL.." / BUILD 1400 / EDITION TOM") or tostring(cfg[f[1]]))
+    local value=(f[3]=="action" and "OPEN") or (f[3]=="restore" and "RUN") or (f[3]=="about" and (HCC_VERSION_LABEL.." / BUILD 1500 / EDITION TOM") or tostring(cfg[f[1]]))
             if f[3]=="about" then
                 local id=cfg.computerId~="" and cfg.computerId or "UNKNOWN"
                 local label=cfg.computerLabel~="" and cfg.computerLabel or "UNLABELLED"

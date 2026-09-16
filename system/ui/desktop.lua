@@ -9,39 +9,53 @@ local function loadModule(path)
  local ok,value=xpcall(chunk,traceback); if not ok then error(value,0) end
  return value
 end
-local function install(E,path)
- local module=loadModule(BASE..path)
+local function install(E,path,loader)
+ local module=loader and loader(path) or loadModule(BASE..path)
  if type(module)~="function" then error("Invalid GUI module: "..path,0) end
  local ok,err=xpcall(function() return module(E) end,traceback)
  if not ok then error("GUI module failed: "..path.."\n"..tostring(err),0) end
 end
 local function runDesktop(context,catalog,holder)
- local Runtime=loadModule(BASE.."core/runtime.lua")
+ local modules=context.modules
+ local function loadSystem(path)
+  if modules then return modules:loadPath(BASE..path, _ENV, path) end
+  return loadModule(BASE..path)
+ end
+ local Runtime=loadSystem("core/runtime.lua")
  local E=Runtime.new(context); holder.runtime=E
- E.HCCV14=context.api; E.Widget=context.ui.widgets; E.palette=E.P
- install(E,"ui/gpu_toms.lua")
- install(E,"ui/canvas.lua")
- install(E,"core/window_manager.lua")
- install(E,"ui/icons.lua")
+ E.HCCV15=context.api; E.HCCV14=context.api; E.Widget=context.ui.widgets; E.palette=E.P; E.modules=modules
+ install(E,"ui/gpu_toms.lua",loadSystem)
+ install(E,"ui/canvas.lua",loadSystem)
+ install(E,"core/window_manager.lua",loadSystem)
+ install(E,"ui/icons.lua",loadSystem)
  E.Widget.drawIcon=E.drawAppIcon
- install(E,"core/currency_data.lua")
- install(E,"core/image_codec.lua")
+ install(E,"core/currency_data.lua",loadSystem)
+ install(E,"core/image_codec.lua",loadSystem)
  E.appContext={window={},canvas=E.canvas,widgets=E.Widget,
   scheduler={invalidate=function(win) if E.mark then E.mark(win) end end},
-  logger=context.logger,settings=E.cfg,peripherals=E.devices,
+  logger=context.logger,settings=E.cfg,peripherals=E.devices,modules=modules,
   network=context.updater,filesystem=fs}
- local AppManager=loadModule(BASE.."core/app_manager.lua")
- AppManager.install(E,catalog,loadModule,BASE)
- if context.config:isFirstBoot() then install(E,"apps/setup.lua") end
- local update=loadModule(BASE.."apps/update_recovery.lua")
+ E.require=function(name)
+  if modules then return modules:load(name) end
+  error("external modules are unavailable",0)
+ end
+ local AppManager=loadSystem("core/app_manager.lua")
+ local function loadApp(path)
+  if modules then return modules:loadPath(path, _ENV, path) end
+  return loadModule(path)
+ end
+ AppManager.install(E,catalog,loadApp,BASE)
+ if context.config:isFirstBoot() then install(E,"apps/setup.lua",loadSystem) end
+ local update=loadSystem("apps/update_recovery.lua")
  if type(update.attach)=="function" then update.attach(E,context.api) end
- install(E,"ui/desktop_view.lua")
- install(E,"ui/taskbar.lua")
- install(E,"ui/start_menu.lua")
- install(E,"ui/compositor.lua")
- install(E,"core/window_actions.lua")
- install(E,"core/input.lua")
- install(E,"core/scheduler.lua")
+ install(E,"ui/desktop_view.lua",loadSystem)
+ install(E,"ui/taskbar.lua",loadSystem)
+ install(E,"ui/start_menu.lua",loadSystem)
+ install(E,"ui/cursor.lua",loadSystem)
+ install(E,"ui/compositor.lua",loadSystem)
+ install(E,"core/window_actions.lua",loadSystem)
+ install(E,"core/input.lua",loadSystem)
+ install(E,"core/scheduler.lua",loadSystem)
  context.runtime=E
  return E.run()
 end
@@ -57,4 +71,3 @@ function Desktop.run(context,catalog)
  return result
 end
 return Desktop
-

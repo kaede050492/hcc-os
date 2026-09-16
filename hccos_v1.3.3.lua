@@ -1,4 +1,5 @@
--- HCC OS v1.4.0 - v1.3.3-compatible desktop pack for CC:Tweaked / Tom's Peripherals 1.3.1.
+-- Legacy HCC OS v1.3.3 compatibility pack. The active v1.5 desktop is modular
+-- and is booted from /.hccos/system; this file is kept only for migration.
 -- Run: hccos    Auto-start: /startup.lua -> /hcc_os/boot.lua.
 -- No external Lua modules. Settings are generated in /.hccos/config/settings;
 -- /.hccos/settings remains a read-only v1.3.3 migration source.

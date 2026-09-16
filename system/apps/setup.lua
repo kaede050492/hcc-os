@@ -1,4 +1,4 @@
--- HCC OS v1.4 graphical first-boot setup.
+-- HCC OS v1.5 graphical first-boot setup.
 return function(E)
  local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E}); local _ENV=env
  local pages={"Welcome","Display","Input","Network","Appearance","Computer Label","Update Settings","Finish"}
@@ -42,7 +42,7 @@ return function(E)
   c:text(8,7,"FIRST BOOT SETUP  "..self.page.."/"..#pages,P.accent)
   for i=1,#pages do c:filledRectangle(8+(i-1)*math.max(8,math.floor((c.w-16)/#pages)),23,math.max(4,math.floor((c.w-20)/#pages)),3,i<=self.page and P.accent or P.border) end
   local page=pages[self.page]; c:text(8,37,page,P.textPrimary,2)
-  if page=="Welcome" then c:paragraph(8,66,"Welcome to HCC OS v1.4. Existing files are preserved. This setup configures the modular Tom's GPU desktop.",P.textSecondary,c.w-16,6)
+  if page=="Welcome" then c:paragraph(8,66,"Welcome to HCC OS v1.5. Existing files are preserved. This setup configures the modular Tom's GPU desktop.",P.textSecondary,c.w-16,6)
   elseif page=="Display" then c:text(8,66,"Tom's GPU: "..tostring(devices.gpuName or "Unavailable"),P.textPrimary); c:text(8,82,string.format("Measured display: %dx%d",Driver.w,Driver.h),P.textSecondary); c:text(8,98,"Reference: 9x5 blocks / 64 pixels per block",P.textSecondary)
   elseif page=="Input" then c:text(8,66,next(devices.keyboards) and "Portable/Tom keyboard connected" or "CC:T keyboard active",P.textPrimary); c:text(8,82,"Mouse events and drag capture are enabled.",P.textSecondary)
   elseif page=="Network" then c:text(8,66,type(http)=="table" and "HTTP API available" or "HTTP API unavailable",P.textPrimary); c:paragraph(8,82,"GitHub manifest: "..self.networkStatus,P.textSecondary,c.w-16,3)
@@ -55,4 +55,3 @@ return function(E)
  end
  register("setup","Setup","ST",430,220,Setup)
 end
-

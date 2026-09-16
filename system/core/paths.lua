@@ -1,7 +1,7 @@
 -- Canonical HCC OS paths. User data is never inside SYSTEM_ROOT.
 
 return {
-    version = "1.4.0",
+    version = "1.5.0",
     system = "/.hccos/system",
     core = "/.hccos/system/core",
     ui = "/.hccos/system/ui",

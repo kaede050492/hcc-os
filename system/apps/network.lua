@@ -1,4 +1,4 @@
--- HCC OS v1.4 GUI application module.
+-- HCC OS v1.5 GUI application module.
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
     local _ENV=env
@@ -38,4 +38,3 @@ end
 register("network","Network Manager","NW",500,250,NetworkManager)
 
 end
-

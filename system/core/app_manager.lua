@@ -1,6 +1,6 @@
 local AppManager={}
 function AppManager.install(E,catalog,loadModule,base)
- if type(catalog)~="table" then error("v1.4 application catalog is missing",0) end
+  if type(catalog)~="table" then error("v1.5 application catalog is missing",0) end
  for _,entry in ipairs(catalog) do
   if entry.id~="updates" then
    local path=base.."apps/"..tostring(entry.module or entry.id)..".lua"
@@ -14,4 +14,3 @@ function AppManager.install(E,catalog,loadModule,base)
  end
 end
 return AppManager
-

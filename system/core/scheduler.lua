@@ -47,7 +47,7 @@ local function boot()
     if context.config:isFirstBoot() then
         local setupWindow=openApp("setup")
         if not setupWindow then error("First Boot Setup could not be opened",0) end
-    elseif HCCV14 and HCCV14.autoUpdatePending then openApp("updates") end
+    elseif HCCV15 and HCCV15.autoUpdatePending then openApp("updates") end
     if configWarning then notify(configWarning,P.warning)
     else notify("HCC OS ready / F1 menu / double-click an icon",P.accent) end
     render()
@@ -63,7 +63,10 @@ local function run()
         elseif not gpuMissingTimer then gpuMissingTimer=os.startTimer(10) end
         if floor(t)~=taskSecond then
             taskSecond=floor(t); OS.taskDirty=true
-            invalidate(box(Driver.w-92,Driver.h-TASK,92,TASK))
+            invalidate(box(0,Driver.h-TASK,Driver.w,TASK))
+        end
+        if OS.pointer.visible and OS.pointer.lastMove>0 and t-OS.pointer.lastMove>clamp(tonumber(cfg.cursorIdle) or 6,1,30) then
+            invalidate(cursorRect()); OS.pointer.visible=false
         end
         for _,w in ipairs(OS.windows) do
             if w.minimized or w.crash or w.nextUpdate then

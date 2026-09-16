@@ -110,7 +110,7 @@ function Recovery:run(reason)
     while true do
         term.clear()
         term.setCursorPos(1, 1)
-        print("HCC OS v1.4.0 - Recovery Mode")
+        print("HCC OS v1.5.0 - Recovery Mode")
         print("Reason:")
         for _, line in ipairs(wrapText(self.reason, displayWidth()-4)) do
             print("  "..line)

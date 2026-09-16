@@ -1,6 +1,11 @@
 return function(E)
  local env=setmetatable({},{__index=E})
- local _ENV=env
+    local _ENV=env
+local TomGpu
+if type(require)=="function" then
+    local ok,value=pcall(require,"hcc.tom_gpu")
+    if ok and type(value)=="table" then TomGpu=value end
+end
 local devices={list={},keyboards={},inventories={},modems={},gpuAvailable=false,keyboardAvailable=false,detectorAvailable=false}
 local gpu
 local Driver={w=576,h=320,metrics={},cellWidth=6,calls=0,syncs=0,error=nil}
@@ -12,6 +17,7 @@ end
 local function wasTerminated(value) return tostring(value or ""):lower():find("terminated",1,true)~=nil end
 local function scanDevices()
     devices.list={}; devices.detector=nil; devices.detectorName=nil; devices.keyboards={}; devices.inventories={}; devices.modems={}
+    devices.gpuCapabilities={}; devices.backend="tom_gpu"
     devices.gpuAvailable=false; devices.keyboardAvailable=false; devices.detectorAvailable=false
     local candidates={}
     local namesOk,names=pcall(peripheral.getNames)
@@ -24,8 +30,9 @@ local function scanDevices()
         if (not ok and wasTerminated(p)) or (not typeOk and wasTerminated(typesValue)) then return false,"terminate" end
         devices.list[#devices.list+1]={name=name,kind=table.concat(types,",")}
         if ok and p then
-            if hasMethods(p,{"getSize","refreshSize","setSize","filledRectangle","line","drawText","getTextLength","sync","fill"}) then
-                candidates[#candidates+1]={name=name,p=p}
+            if (TomGpu and TomGpu.isGpu and TomGpu.isGpu(p)) or
+                hasMethods(p,{"getSize","refreshSize","setSize","filledRectangle","line","drawText","getTextLength","sync","fill"}) then
+                candidates[#candidates+1]={name=name,p=p,capabilities=TomGpu and TomGpu.capabilities and TomGpu.capabilities(p) or {}}
             end
             if hasMethods(p,{"getOnlinePlayers","getPlayerPos"}) and
                 (cfg.detectorName=="" or name==cfg.detectorName) and not devices.detector then
@@ -60,6 +67,8 @@ local function scanDevices()
     end
     gpu=chosen and chosen.p or nil
     devices.gpuName=chosen and chosen.name or nil
+    devices.gpuCapabilities=chosen and chosen.capabilities or {}
+    devices.backend="tom_gpu"
     Driver.error=nil; if not gpu then Driver.error="Tom's GPU not found" end; Driver.metrics={}
     if gpu then
         local ok,err=pcall(gpu.refreshSize)

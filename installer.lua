@@ -1,4 +1,4 @@
--- HCC OS v1.4.0 standalone installer.
+-- HCC OS v1.5.0 standalone installer.
 -- Self-contained: no installed HCC OS module is required.
 local GITHUB_USER="kaede050492"
 local GITHUB_REPOSITORY="hcc-os"
@@ -145,7 +145,7 @@ end
 local function placeClean()
  local state={backup=nil,oldStartup=false,newStartup=false}
  if fs.exists(STARTUP) then
-  state.backup=backupPath("pre-v1.4")
+   state.backup=backupPath("pre-v1.5")
   fs.move(STARTUP,state.backup.."/startup.lua"); state.oldStartup=true
  end
  local ok,err=pcall(function()
@@ -167,7 +167,7 @@ local function removeInstaller()
 end
 local function install()
  term.clear(); term.setCursorPos(1,1)
- print("HCC OS v1.4.0 Standalone Installer")
+ print("HCC OS v1.5.0 Standalone Installer")
  print("GitHub: "..RAW_ROOT)
  print("User data is kept outside /.hccos/system."); print("")
  cleanupTemp()
@@ -217,7 +217,7 @@ local function install()
   end
  end
  cleanupTemp()
- print(""); print("Installation complete: HCC OS v"..manifest.version)
+  print(""); print("Installation complete: HCC OS v"..manifest.version)
  if backup then print("Backup: "..backup) else print("Backup: not required for clean install") end
  print("Reboot or run /startup.lua.")
  removeInstaller()

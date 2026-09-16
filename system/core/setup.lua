@@ -42,7 +42,7 @@ end
 function Setup.run(config, remote, logger)
     term.clear()
     term.setCursorPos(1, 1)
-    print("HCC OS v1.4.0 Setup")
+    print("HCC OS v1.5.0 Setup")
     print("Welcome to HCC OS. Existing user files are kept.")
     print("")
     local hardware = detectHardware()

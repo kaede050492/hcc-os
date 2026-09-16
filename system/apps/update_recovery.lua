@@ -12,7 +12,7 @@ end
 
 function UpdateRecovery:init()
     self.env = self.env or UpdateRecovery.environment
-    self.api = UpdateRecovery.api or self.env.HCCV14
+    self.api = UpdateRecovery.api or self.env.HCCV15 or self.env.HCCV14
     self.api.updateWindow = self.win
     self.status = self.api.autoUpdatePending and "Automatic check pending" or "Ready"
     self.result = nil
@@ -105,7 +105,7 @@ function UpdateRecovery:draw(canvas)
     canvas:text(7, 20, "GitHub manifest / transactional system updates", env.palette.textSecondary)
     local localRevision=self.result and self.result.localRevision or ""
     local remoteRevision=self.result and self.result.remoteRevision or ""
-    canvas:text(7, 38, "LOCAL: "..tostring(self.result and self.result.localVersion or "1.4.0")..(localRevision~="" and " ("..localRevision..")" or ""), env.palette.textPrimary)
+    canvas:text(7, 38, "LOCAL: "..tostring(self.result and self.result.localVersion or "1.5.0")..(localRevision~="" and " ("..localRevision..")" or ""), env.palette.textPrimary)
     canvas:text(7, 51, "REMOTE: "..tostring(self.result and self.result.remoteVersion or "not checked")..(remoteRevision~="" and " ("..remoteRevision..")" or ""), env.palette.textPrimary)
     canvas:text(7, 66, "STATUS: "..tostring(self.status), self.error and env.palette.error or env.palette.textSecondary)
     local state = self.api.context.updater:status()

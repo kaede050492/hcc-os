@@ -32,18 +32,21 @@ end
 local function runInternal(arguments)
     arguments = arguments or {}
     local base = "/.hccos/system/"
-    local paths = loadModule(base.."core/paths.lua")
-    local Logger = loadModule(base.."core/logger.lua")
-    local Config = loadModule(base.."core/config.lua")
-    local Remote = loadModule(base.."core/remote.lua")
-    local Updater = loadModule(base.."core/updater.lua")
-    local Recovery = loadModule(base.."core/recovery.lua")
-    local Widgets = loadModule(base.."ui/widgets.lua")
-    local Icons = loadModule(base.."ui/icons.lua")
-    local Taskbar = loadModule(base.."ui/taskbar.lua")
-    local StartMenu = loadModule(base.."ui/start_menu.lua")
-    local Desktop = loadModule(base.."ui/desktop.lua")
-    local AppCatalog = loadModule(base.."apps/app_catalog.lua")
+    local ModuleLoader = loadModule(base.."core/module_loader.lua")
+    local moduleLoader = ModuleLoader.new({roots={base, base.."lib", "/.hccos/lib", "/lib"}})
+    local function loadSystem(name) return moduleLoader:load(name) end
+    local paths = loadSystem("core/paths")
+    local Logger = loadSystem("core/logger")
+    local Config = loadSystem("core/config")
+    local Remote = loadSystem("core/remote")
+    local Updater = loadSystem("core/updater")
+    local Recovery = loadSystem("core/recovery")
+    local Widgets = loadSystem("ui/widgets")
+    local Icons = loadSystem("ui/icons")
+    local Taskbar = loadSystem("ui/taskbar")
+    local StartMenu = loadSystem("ui/start_menu")
+    local Desktop = loadSystem("ui/desktop")
+    local AppCatalog = loadSystem("apps/app_catalog")
     local logger = Logger.new(paths, 400)
     local config = Config.new(paths, logger)
     config:ensureDirectories()
@@ -71,7 +74,7 @@ local function runInternal(arguments)
 
     local updater = Updater.new(paths, config, logger, Remote)
     local context = {
-        paths=paths, config=config, logger=logger, remote=Remote,
+        paths=paths, config=config, logger=logger, remote=Remote, modules=moduleLoader,
         updater=updater, localManifest=updater.localManifest,
         ui={widgets=Widgets, icons=Icons, taskbar=Taskbar, startMenu=StartMenu}
     }
@@ -79,13 +82,13 @@ local function runInternal(arguments)
         return Recovery.new(context):run(reason or "manual recovery request")
     end
 
-    _G.HCCV14 = {
-        version="1.4.0", build=1400, context=context,
+    _G.HCCV15 = {
+        version="1.5.0", build=1500, context=context,
         autoUpdatePending=config.data.autoUpdateCheck,
         attachApp=function(environment)
-            _G.HCCV14.appMark=environment.mark
-            local app = loadModule(base.."apps/update_recovery.lua")
-            if type(app.attach) == "function" then app.attach(environment, _G.HCCV14) end
+            _G.HCCV15.appMark=environment.mark
+            local app = loadSystem("apps/update_recovery")
+            if type(app.attach) == "function" then app.attach(environment, _G.HCCV15) end
         end,
         check=function() return updater:check() end,
         beginAutoCheck=function() return updater:beginAsyncCheck() end,
@@ -93,7 +96,7 @@ local function runInternal(arguments)
             local handled
             if type(handleOrReason) == "table" then handled=updater:handleHttpSuccess(url, handleOrReason)
             else handled=updater:handleHttpFailure(url, handleOrReason) end
-            if handled and _G.HCCV14.appMark then _G.HCCV14.appMark(_G.HCCV14.updateWindow) end
+            if handled and _G.HCCV15.appMark then _G.HCCV15.appMark(_G.HCCV15.updateWindow) end
             return handled
         end,
         beginUpdate=function(manifest) return updater:begin(manifest) end,
@@ -105,7 +108,8 @@ local function runInternal(arguments)
         resetSettings=function() return config:reset() end,
         bootLog=function() return logger:read() end
     }
-    context.api = _G.HCCV14
+    context.api = _G.HCCV15
+    _G.HCCV14 = _G.HCCV15
 
     if arguments[1] == "--recovery" then
         local action = Recovery.new(context):run("manual recovery request")

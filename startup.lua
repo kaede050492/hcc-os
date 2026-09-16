@@ -1,4 +1,4 @@
--- HCC OS v1.4.0 minimal root boot loader.
+-- HCC OS v1.5.0 minimal root boot loader.
 -- The HCC OS implementation remains under /.hccos/system/.
 
 local entrypoint = "/.hccos/system/core/bootstrap.lua"
@@ -74,7 +74,7 @@ local function loadFile(path)
 end
 
 if not fs.exists(entrypoint) then
-    print("[HCC OS] HCC OS v1.4 core entrypoint is missing:")
+    print("[HCC OS] HCC OS v1.5 core entrypoint is missing:")
     print(entrypoint)
     print("Run the standalone installer.lua to install or repair HCC OS.")
     return

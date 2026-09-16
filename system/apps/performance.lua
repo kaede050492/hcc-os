@@ -1,4 +1,4 @@
--- HCC OS v1.4 GUI application module.
+-- HCC OS v1.5 GUI application module.
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
     local _ENV=env
@@ -14,4 +14,3 @@ end
 register("performance","Performance Graph","PG",350,190,Performance)
 
 end
-

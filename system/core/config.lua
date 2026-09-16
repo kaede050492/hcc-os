@@ -40,7 +40,9 @@ local defaults = {
     resourceRefresh = 2,
     maxImageDownload = 4194304,
     imageCacheLimit = 4194304,
-    imageCacheEnabled = true
+    imageCacheEnabled = true,
+    cursorIdle = 6,
+    uiScale = 1
 }
 
 local function copy(source)
@@ -112,6 +114,8 @@ function Config:load()
     self.data.wallpaperMode = ({black=true,center=true,fit=true,fill=true,stretch=true,tile=true})[self.data.wallpaperMode] and self.data.wallpaperMode or "black"
     self.data.updateChannel = self.data.updateChannel == "beta" and "beta" or "stable"
     self.data.logLimit = math.max(50, math.min(1000, math.floor(tonumber(self.data.logLimit) or 400)))
+    self.data.cursorIdle = math.max(1, math.min(30, tonumber(self.data.cursorIdle) or 6))
+    self.data.uiScale = self.data.uiScale == 2 and 2 or 1
     return self.data
 end
 

@@ -1,4 +1,4 @@
--- HCC OS v1.4 bounded widget toolkit.
+-- HCC OS v1.5 bounded widget toolkit.
 local W={}
 local function add(app,kind,x,y,w,h,value,action)
  local hit={kind=kind,x=x,y=y,w=w,h=h,value=value,action=action or function() end}
@@ -29,4 +29,3 @@ function W.splitter(app,c,x,y,w,h,vertical,action,p) c:filledRectangle(x,y,w,h,p
 function W.icon(c,x,y,def,selected) if W.drawIcon then W.drawIcon(c,def,x,y,28,selected and "selected" or "normal") end end
 function W.value(c,x,y,label,value,color,p) c:text(x,y,label,p.textSecondary); c:text(x+#label*6+5,y,value,color or p.textPrimary) end
 return W
-
