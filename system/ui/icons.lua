@@ -149,7 +149,7 @@ return function(E)
         return type(def)=="table" and (def.iconId or def.id) or tostring(def or "default")
     end
     local function drawControl(c,x,y,size,kind,color)
-        color=color or P.textPrimary; size=max(8,floor(size or 12)); local mid=floor(size/2)
+        color=color or P.textPrimary; size=max(8,floor(tonumber(size) or 12)); local mid=floor(size/2)
         if kind=="close" then
             c:line(x+3,y+3,x+size-4,y+size-4,color); c:line(x+size-4,y+3,x+3,y+size-4,color)
         elseif kind=="maximize" then c:rectangle(x+3,y+3,size-6,size-6,color)
@@ -182,7 +182,9 @@ return function(E)
     function Manager.draw(c,id,x,y,size,state)
         return drawAppIcon(c,type(id)=="table" and id or {id=tostring(id),iconId=tostring(id)},x,y,size,state)
     end
-    function Manager.drawControl(c,kind,x,y,size,color) return drawControl(c,x,y,size,kind,color) end
+    -- Keep the public order consistent with every caller: canvas, x, y,
+    -- size, kind, color. Invalid sizes fall back safely inside drawControl.
+    function Manager.drawControl(c,x,y,size,kind,color) return drawControl(c,x,y,size,kind,color) end
     function Manager.app(c,def,x,y,size,state) return drawAppIcon(c,def,x,y,size,state) end
 
     E.ICON_REGISTRY=ICONS; E.ICON_ACCENTS=COLORS; E.IconManager=Manager; E.icons=Manager
