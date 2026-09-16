@@ -49,10 +49,18 @@ function Radar:update()
     table.sort(names); self.online=#names
     self.query={detector=detector,names=names,index=1,players={},unavailable=0,far=0,
         dims={[dimension(cfg.dimension)]=true,[self.dim]=true}}
-    if #names==0 then self:update() end
+    -- An empty server is a valid detector response.  Do not recurse here:
+    -- calling update() again for an empty list caused an infinite recursion
+    -- when Player Detector was connected but no players were online.
+    if #names==0 then
+        self.players={}; self.query=nil; self.dims={self.dim}; self.range=256
+        mark(self.win)
+        return
+    end
     mark(self.win)
 end
 function Radar:cycleDimension()
+    if #self.dims==0 then self.dims={self.dim} end
     local index=1; for i,d in ipairs(self.dims) do if d==self.dim then index=i end end
     self.dim=self.dims[index%#self.dims+1]; self.page=1; self:update()
 end
