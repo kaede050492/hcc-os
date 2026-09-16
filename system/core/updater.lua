@@ -444,7 +444,6 @@ function Updater:stageDownloadedFile(file, body)
         local free=freeSpace(root)
         if free=="unlimited" then free=math.huge end
         if type(free)=="number" then
-            free=free-(self.stagedBytes[root] or 0)
             if free>=#body+4096 and (not selectedFree or free>selectedFree) then selected,selectedFree=root,free end
         end
     end
@@ -463,7 +462,7 @@ function Updater:stageDownloadedFile(file, body)
             local free=freeSpace(root)
             if free=="unlimited" then free=math.huge end
             if type(free)=="number" then
-                free=free-(self.stagedBytes[root] or 0)-4096
+                free=free-4096
                 if free>0 then candidates[#candidates+1]={root=root,free=free} end
             end
         end
@@ -597,7 +596,6 @@ function Updater:backupCurrent(version)
     local destination=fs.combine(primary,name)
     local moved={}
     local locations={}
-    local usage={}
     local files={}
     if fs.exists(self.paths.system) then collectFiles(self.paths.system,self.paths.system,"",files) end
     local ok,err=pcall(function()
@@ -609,7 +607,6 @@ function Updater:backupCurrent(version)
                 local free=freeSpace(root)
                 if free=="unlimited" or free==nil then free=math.huge end
                 if type(free)=="number" then
-                    free=free-(usage[root] or 0)
                     if free>=size+4096 and (not selectedFree or free>selectedFree) then selected,selectedFree=root,free end
                 end
             end
@@ -619,7 +616,6 @@ function Updater:backupCurrent(version)
             transfer(file.source,target)
             moved[#moved+1]={source=file.source,target=target}
             locations[file.relative]=target
-            usage[selected]=(usage[selected] or 0)+size
         end
         local index=fs.open(fs.combine(destination,"backup.lua"),"w")
         if not index then error("Could not write distributed rollback index") end
