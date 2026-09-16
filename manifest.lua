@@ -10,7 +10,7 @@ return {
     channel = "stable",
     installedSize = 320000,
     startupSize = 4078,
-    maxFileSize = 40000,
+    maxFileSize = 49152,
     files = {
         "manifest.lua",
         "version.lua",
