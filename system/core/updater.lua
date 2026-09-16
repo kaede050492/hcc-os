@@ -101,9 +101,9 @@ function Updater:handleHttpSuccess(url, handle)
     local ok, body = pcall(handle.readAll)
     if handle.close then pcall(handle.close) end
     self.checkJob = nil
-    if not ok then self.state.phase, self.state.message = "offline", "Manifest read failed"; return false end
+    if not ok then self.state.phase, self.state.message = "offline", "Manifest read failed"; return true end
     local manifest, err = self.remote.parseManifest(body or "")
-    if not manifest then self.state.phase, self.state.message = "offline", tostring(err); return false end
+    if not manifest then self.state.phase, self.state.message = "offline", tostring(err); return true end
     local localBuild = tonumber(self.localManifest and self.localManifest.build) or 0
     local remoteBuild = tonumber(manifest.build) or 0
     self.lastCheck = {
@@ -217,9 +217,9 @@ function Updater:backupCurrent(version)
     local destination = self.paths.backups.."/"..name
     if fs.exists(destination) then destination = destination.."-"..tostring(os.epoch("utc")) end
     fs.makeDir(destination)
-    if fs.exists(self.paths.system) then fs.move(self.paths.system, destination.."/system") end
     local info = fs.open(destination.."/version", "w")
     if info then info.write(tostring(version or "unknown")); info.close() end
+    if fs.exists(self.paths.system) then fs.move(self.paths.system, destination.."/system") end
     return destination
 end
 
@@ -237,7 +237,7 @@ function Updater:apply()
     if self.repairOnly then
         local placed = {}
         local rollbackRoot = self.paths.temp.."/repair-rollback"
-        if fs.exists(rollbackRoot) then fs.delete(rollbackRoot) end
+        if fs.exists(rollbackRoot) then return false, "Previous repair backup requires recovery: "..rollbackRoot end
         local ok, err = pcall(function()
             for _, file in ipairs(self.files or {}) do
                 local source = fs.combine(self.paths.updateTemp, file.path)
@@ -245,25 +245,30 @@ function Updater:apply()
                 if not fs.exists(source) or fs.isDir(source) then error("Staged repair file is missing: "..file.path) end
                 local backup = fs.combine(rollbackRoot, file.path)
                 local hadOriginal = fs.exists(target)
-                placed[#placed+1] = {path=target, backup=backup, hadOriginal=hadOriginal}
-                if hadOriginal then ensureParent(backup); fs.move(target,backup) end
-                ensureParent(target); fs.move(source, target)
+                local item={path=target, backup=backup, moved=false, installed=false}
+                placed[#placed+1] = item
+                if hadOriginal then ensureParent(backup); fs.move(target,backup); item.moved=true end
+                ensureParent(target); fs.move(source, target); item.installed=true
             end
             if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
-            if fs.exists(rollbackRoot) then fs.delete(rollbackRoot) end
         end)
         if not ok then
+            local restored=true
             for index=#placed,1,-1 do
                 local item=placed[index]
-                if fs.exists(item.path) then pcall(fs.delete,item.path) end
-                if item.hadOriginal and fs.exists(item.backup) then ensureParent(item.path); pcall(fs.move,item.backup,item.path) end
+                local recovered=pcall(function()
+                    if item.installed and fs.exists(item.path) then fs.delete(item.path) end
+                    if item.moved then ensureParent(item.path); fs.move(item.backup,item.path) end
+                end)
+                restored=restored and recovered
             end
-            if fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
+            if restored and fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
             if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
-            self.state.phase, self.state.message = "failed", "Repair rolled back: "..tostring(err)
+            self.state.phase, self.state.message = "failed", (restored and "Repair rolled back: " or "Repair recovery required; backup kept at "..rollbackRoot..": ")..tostring(err)
             self.logger:error(self.state.message)
             return false, err
         end
+        if fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
         self.state.phase, self.state.message = "applied", "Repair applied; restart HCC OS"
         self.logger:info("Repaired "..tostring(#(self.files or {})).." system files")
         return true
@@ -280,11 +285,13 @@ function Updater:apply()
         if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
     end)
     if not ok then
-        if fs.exists(self.paths.system) then pcall(fs.delete, self.paths.system) end
-        if fs.exists(backup.."/system") then pcall(fs.move, backup.."/system", self.paths.system) end
-        if fs.exists(backup) then pcall(fs.delete,backup) end
+        local restored=pcall(function()
+            if fs.exists(self.paths.system) then fs.delete(self.paths.system) end
+            fs.move(backup.."/system", self.paths.system)
+        end)
+        if restored and fs.exists(backup) then pcall(fs.delete,backup) end
         if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
-        self.state.phase, self.state.message = "failed", "Update rolled back: "..tostring(err)
+        self.state.phase, self.state.message = "failed", (restored and "Update rolled back: " or "Update recovery required; backup kept at "..backup..": ")..tostring(err)
         self.logger:error(self.state.message)
         return false, err
     end

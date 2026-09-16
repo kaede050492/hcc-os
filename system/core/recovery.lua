@@ -45,7 +45,9 @@ end
 local function pause()
     print("")
     print("Press any key to continue.")
-    os.pullEventRaw("key")
+    local event
+    repeat event=os.pullEventRaw() until event=="key" or event=="terminate"
+    return event~="terminate"
 end
 
 local function loadModule(path)
@@ -121,19 +123,21 @@ function Recovery:run(reason)
         for i, label in ipairs(options) do print((i == self.selected and "> " or "  ")..i..". "..label) end
         print("")
         print("Use UP/DOWN and ENTER. Cancel update with C.")
-        local event, key = os.pullEventRaw("key")
+        local event, key
+        repeat event,key=os.pullEventRaw() until event=="key" or event=="terminate"
+        if event=="terminate" then return "terminate" end
         if event == "key" then
             if key == keys.up then self.selected = (self.selected-2)%#options+1
             elseif key == keys.down then self.selected = self.selected%#options+1
             elseif key == keys.enter then
                 if self.selected == 1 then return "start"
                 elseif self.selected == 2 then
-                    local ok, err = self.context.updater:rollback(); self:message(ok and "Rollback complete. Restart HCC OS." or tostring(err)); pause()
-                elseif self.selected == 3 then self:repair(); pause()
-                elseif self.selected == 4 then self:resetSettings(); pause()
-                elseif self.selected == 5 then print(self.context.logger:read()); pause()
-                elseif self.selected == 6 then self:reinstall(); pause()
-                elseif self.selected == 7 then shell.run("/rom/programs/shell"); pause() end
+                    local ok, err = self.context.updater:rollback(); self:message(ok and "Rollback complete. Restart HCC OS." or tostring(err)); if not pause() then return "terminate" end
+                elseif self.selected == 3 then self:repair(); if not pause() then return "terminate" end
+                elseif self.selected == 4 then self:resetSettings(); if not pause() then return "terminate" end
+                elseif self.selected == 5 then print(self.context.logger:read()); if not pause() then return "terminate" end
+                elseif self.selected == 6 then self:reinstall(); if not pause() then return "terminate" end
+                elseif self.selected == 7 then shell.run("/rom/programs/shell"); if not pause() then return "terminate" end end
             elseif key == keys.escape then return "start" end
         end
     end

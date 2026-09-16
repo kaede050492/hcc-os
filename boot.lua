@@ -34,9 +34,10 @@ if not fs.exists(core) then
     return
 end
 
+local arguments={...}
 local ok, err = pcall(function()
     local bootstrap = loadFile(core)()
-    bootstrap.run({...})
+    bootstrap.run(arguments)
 end)
 
 if not ok then

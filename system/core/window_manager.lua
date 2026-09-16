@@ -86,7 +86,8 @@ local function dialog(title,message,buttons,callback,input)
     local safeButtons=type(buttons)=="table" and buttons or {"OK"}
     local safeCallback=type(callback)=="function" and callback or nil
     if callback~=nil and not safeCallback then logLine("WARN","Ignored non-function dialog callback") end
-    local safeInput=input==nil and nil or tostring(input)
+    local safeInput
+    if input~=nil then safeInput=tostring(input) end
     OS.modal={title=ascii(title),message=ascii(message),buttons=safeButtons,callback=safeCallback,
         input=safeInput,index=safeInput~=nil and 1 or #safeButtons,pos=safeInput and #safeInput or 0}
 end

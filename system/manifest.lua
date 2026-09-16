@@ -4,8 +4,8 @@ return {
     build = 1400,
     edition = "Tom's Peripherals",
     channel = "stable",
-    installedSize = 290000,
-    startupSize = 4047,
+    installedSize = 300000,
+    startupSize = 4078,
     maxFileSize = 40000,
     files = {
         "manifest.lua", "version.lua", "core/paths.lua", "core/logger.lua",

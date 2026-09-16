@@ -108,7 +108,8 @@ local function runInternal(arguments)
     context.api = _G.HCCV14
 
     if arguments[1] == "--recovery" then
-        return Recovery.new(context):run("manual recovery request")
+        local action = Recovery.new(context):run("manual recovery request")
+        if action ~= "start" then return action end
     end
     if config.data.autoUpdateCheck then
         logger:info("Automatic update check scheduled after desktop start")
@@ -116,17 +117,18 @@ local function runInternal(arguments)
         -- Recovery app performs the optional check on its first service tick.
     end
 
-    local ok, result = xpcall(function()
-        return Desktop.run(context, AppCatalog)
-    end, function(reason)
-        return traceback(reason, 3)
-    end)
-    if not ok then
+    while true do
+        local ok, result = xpcall(function()
+            return Desktop.run(context, AppCatalog)
+        end, function(reason)
+            return traceback(reason, 3)
+        end)
+        if ok then return result end
         local failure = errorText(result)
         pcall(function() logger:error("Desktop start failed: "..failure) end)
-        return Recovery.new(context):run(failure)
+        local action = Recovery.new(context):run(failure)
+        if action ~= "start" then return action end
     end
-    return result
 end
 
 function Bootstrap.run(arguments)

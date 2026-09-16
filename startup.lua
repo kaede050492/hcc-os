@@ -3,6 +3,7 @@
 
 local entrypoint = "/.hccos/system/core/bootstrap.lua"
 local bootLog = "/.hccos/logs/boot.log"
+local arguments = {...}
 
 local function reasonText(value)
     local text = tostring(value or "")
@@ -84,7 +85,7 @@ local ok, err = xpcall(function()
     if type(bootstrap) ~= "table" or type(bootstrap.run) ~= "function" then
         error("Invalid HCC OS bootstrap entrypoint", 0)
     end
-    bootstrap.run({})
+    bootstrap.run(arguments)
 end, function(reason)
     return traceback(reason)
 end)

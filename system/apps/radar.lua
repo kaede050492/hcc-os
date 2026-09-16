@@ -121,5 +121,6 @@ function Radar:draw(c)
     c:text(139,c.h-19,"X"..cfg.centerX.." Z"..cfg.centerZ,P.textSecondary)
 end
 register("radar","Player Radar","RA",336,268,Radar)
+E.dimension=dimension
 
 end

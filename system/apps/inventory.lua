@@ -3,6 +3,12 @@ return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
     local _ENV=env
 local Inventory={}
+local function inventorySize(info)
+    if not info or not info.p or type(info.p.size)~="function" then return 1 end
+    local ok,value=pcall(info.p.size)
+    if not ok or not finite(value) then return 1 end
+    return max(1,floor(value))
+end
 function Inventory:init(args)
     self.selected=1; self.top=1; self.inventoryIndex=1; self.slots={}; self.lastRefresh=0
     self:refresh(args and args.inventory)
@@ -15,11 +21,11 @@ function Inventory:refresh(preferred)
     local info=devices.inventories[self.inventoryIndex]
     self.info=info; self.slots={}; self.error=nil
     if info then
-        local ok,size=pcall(info.p.size)
+        local size=inventorySize(info)
         local listed,list=pcall(info.p.list)
-        if not ok or not listed or type(list)~="table" then self.error="Inventory list unavailable"
+        if not listed or type(list)~="table" then self.error="Inventory list unavailable"
         else
-            for slot=1,floor(size) do
+            for slot=1,size do
                 local item=list[slot]
                 if item then
                     local detail=item
@@ -33,7 +39,7 @@ function Inventory:refresh(preferred)
             end
         end
     end
-    self.selected=clamp(self.selected,1,max(1,info and (pcall(info.p.size) and info.p.size() or 1) or 1))
+    self.selected=clamp(self.selected,1,inventorySize(info))
     self.lastRefresh=now(); mark(self.win)
 end
 function Inventory:nextInventory(delta)
@@ -48,7 +54,7 @@ function Inventory:openPrice()
     end
 end
 function Inventory:onKey(k)
-    local size=self.info and (select(2,pcall(self.info.p.size)) or 1) or 1
+    local size=inventorySize(self.info)
     if k==keys.up then self.selected=max(1,self.selected-1)
     elseif k==keys.down then self.selected=min(size,self.selected+1)
     elseif k==keys.left then self:nextInventory(-1)
@@ -58,10 +64,10 @@ function Inventory:onKey(k)
     mark(self.win)
 end
 function Inventory:onMouse(kind,x,y,b)
-    if kind=="scroll" then self.selected=clamp(self.selected+b*3,1,max(1,self.info and (select(2,pcall(self.info.p.size)) or 1) or 1))
+    if kind=="scroll" then self.selected=clamp(self.selected+b*3,1,inventorySize(self.info))
     elseif kind=="click" then
         if y<27 and x>=self.win.w-75 then self:nextInventory(1); return end
-        if y>=34 and y<self.win.h-35 and x<self.win.w*0.58 then self.selected=clamp(1+floor((y-34)/18)+self.top-1,1,max(1,self.info and (select(2,pcall(self.info.p.size)) or 1) or 1))
+        if y>=34 and y<self.win.h-35 and x<self.win.w*0.58 then self.selected=clamp(1+floor((y-34)/18)+self.top-1,1,inventorySize(self.info))
         elseif y>=self.win.h-28 then self:openPrice() end
     end
     mark(self.win)
@@ -72,8 +78,7 @@ function Inventory:draw(c)
         c:paragraph(8,34,"No compatible inventory peripheral found. Connect a chest or storage peripheral and press F5.",P.warning,c.w-16,5)
         c:text(8,c.h-14,"F5 RESCAN",P.textSecondary); return
     end
-    local info=self.info or devices.inventories[self.inventoryIndex]; local size=1
-    if info then local ok,n=pcall(info.p.size); if ok and finite(n) then size=n end end
+    local info=self.info or devices.inventories[self.inventoryIndex]; local size=inventorySize(info)
     local title=(info and info.name or "inventory").."  "..size.." slots"
     c:text(6,19,title,P.textSecondary)
     button(self,c,c.w-70,3,63,"NEXT",function() self:nextInventory(1) end)
@@ -102,4 +107,3 @@ end
 register("inventory","Inventory Viewer","IV",500,270,Inventory)
 
 end
-

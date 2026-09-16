@@ -83,7 +83,7 @@ local function handleEvent(e)
     end
     if name=="http_success" or name=="http_failure" then
         for _,w in ipairs(OS.windows) do
-            if w.id=="web" and not w.minimized and not w.crash then
+            if w.id=="web" and not w.crash then
                 if name=="http_success" then appCall(w,"onHttpSuccess",e[2],e[3]) else appCall(w,"onHttpFailure",e[2],e[3]) end
                 break
             end

@@ -60,7 +60,7 @@ local function scanDevices()
     end
     gpu=chosen and chosen.p or nil
     devices.gpuName=chosen and chosen.name or nil
-    Driver.error=gpu and nil or "Tom's GPU not found"; Driver.metrics={}
+    Driver.error=nil; if not gpu then Driver.error="Tom's GPU not found" end; Driver.metrics={}
     if gpu then
         local ok,err=pcall(gpu.refreshSize)
         if not ok and wasTerminated(err) then gpu=nil; Driver.error="Terminated"; return false,"terminate" end
@@ -184,7 +184,7 @@ function Driver.drawTextSmart(x,y,value,color,scale,clip)
         Driver.text({bounds=bounds,value=ascii(value),color=color,scale=scale})
     end
 end
-E.Driver=Driver; E.devices=devices; E.scanDevices=scanDevices
+E.Driver=Driver; E.devices=devices; E.scanDevices=scanDevices; E.clipLine=clipLine
 E.gpuAvailable=function() return gpu~=nil end
 E.shutdownDisplay=function() if gpu then Driver.clear(0xFF000000); Driver.sync() end end
 local allowed={w=true,h=true,cellWidth=true,calls=true,syncs=true,error=true,measure=true,getWidth=true,getHeight=true,getActualSize=true}
