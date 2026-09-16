@@ -5,6 +5,7 @@ local GITHUB_REPOSITORY="hcc-os"
 local GITHUB_BRANCH="main"
 local RAW_ROOT="https://raw.githubusercontent.com/"..GITHUB_USER.."/"..GITHUB_REPOSITORY.."/"..GITHUB_BRANCH
 local MANIFEST_URL=RAW_ROOT.."/manifest.lua"
+local COMMIT_API_URL="https://api.github.com/repos/"..GITHUB_USER.."/"..GITHUB_REPOSITORY.."/commits/"..GITHUB_BRANCH
 
 local SYSTEM_ROOT="/.hccos/system"
 local CONFIG_ROOT="/.hccos/config"
@@ -39,10 +40,10 @@ local function writeAll(path,value)
  ensureParent(path); local f,err=fs.open(path,"w"); if not f then return false,err end
  local ok,writeError=pcall(f.write,value); f.close(); return ok,writeError
 end
-local function fetch(url)
+local function fetch(url,headers)
  if type(http)~="table" or type(http.get)~="function" then return nil,"CC:T HTTP API unavailable" end
  if type(url)~="string" or not url:match("^https://[^%s]+$") then return nil,"unsafe HTTPS URL" end
- local requestOk,handle,err=pcall(http.get,url)
+ local requestOk,handle,err=pcall(http.get,url,headers)
  if not requestOk then return nil,"HTTP failed: "..url..": "..tostring(handle) end
  if not handle then return nil,"HTTP failed: "..url..": "..tostring(err) end
  local readOk,body=pcall(handle.readAll)
@@ -54,6 +55,17 @@ local function fetch(url)
  if code<200 or code>=300 then return nil,"HTTP failed: "..url..": HTTP "..tostring(code) end
  if type(body)~="string" or #body==0 then return nil,"HTTP failed: "..url..": empty response" end
  return body
+end
+local function latestCommit()
+ local body,err=fetch(COMMIT_API_URL,{["Accept"]="application/vnd.github+json",["User-Agent"]="HCC-OS-Installer"})
+ if not body then return nil,err end
+ local value
+ if textutils and type(textutils.unserializeJSON)=="function" then
+  local ok,result=pcall(textutils.unserializeJSON,body); if ok then value=result end
+ end
+ local sha=type(value)=="table" and value.sha or body:match('"sha"%s*:%s*"([%da-fA-F]+)"')
+ if type(sha)~="string" or not sha:match("^[%da-fA-F]+$") then return nil,"GitHub returned no commit SHA" end
+ return sha:lower()
 end
 local function parseManifest(source)
  if type(source)~="string" then return nil,"manifest body is not text" end
@@ -175,6 +187,7 @@ local function install()
  if not manifestBody then error("manifest.lua: "..tostring(manifestError),0) end
  local manifest,parseError=parseManifest(manifestBody)
  if not manifest then error("manifest.lua: "..tostring(parseError),0) end
+ local commitSha,commitError=latestCommit()
  local entries=manifestEntries(manifest)
  local existing=fs.exists(SYSTEM_ROOT) and fs.isDir(SYSTEM_ROOT)
  local installedSize=math.max(0,math.floor(tonumber(manifest.installedSize) or 0))
@@ -184,6 +197,9 @@ local function install()
  local requiredAdditional=installedSize+startupSize+SAFETY_MARGIN
  local free=freeSpace()
  print("Release: "..manifest.version.." / build "..tostring(manifest.build or "unknown"))
+ print("GitHub commit: "..(commitSha and commitSha:sub(1,12) or "unavailable"))
+ if commitError then print("Commit lookup: "..tostring(commitError)) end
+ print("Manifest revision: "..tostring(manifest.revision or "unknown"))
  print("Mode: "..(existing and "SAFE UPDATE" or "MINIMAL CLEAN INSTALL"))
  print("Free space: "..tostring(free or "unavailable").." bytes")
  print("Required temporary space: "..temporarySize.." bytes")
