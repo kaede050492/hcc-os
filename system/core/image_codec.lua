@@ -221,7 +221,10 @@ local function inflateRaw(data,limit,yieldFn)
                 local hlit=deflateBits(reader,5,"truncated DEFLATE dynamic header")+257
                 local hdist=deflateBits(reader,5,"truncated DEFLATE dynamic header")+1
                 local hclen=deflateBits(reader,4,"truncated DEFLATE dynamic header")+4
-                local order={16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1}; local cl={}; for i=1,19 do cl[i]=0 end
+                -- RFC 1951 code-length alphabet order contains all 19
+                -- entries; omitting the final 15 breaks valid PNGs when
+                -- HCLEN requests the complete table.
+                local order={16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15}; local cl={}; for i=1,19 do cl[i]=0 end
                 for i=1,hclen do
                     local orderIndex=order[i]
                     if type(orderIndex)~="number" then error("invalid DEFLATE code length order") end
