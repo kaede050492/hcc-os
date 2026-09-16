@@ -44,27 +44,14 @@ end
 
 local function pause()
     print("")
-    print("Press any key to continue.")
-    local event
-    repeat event=os.pullEventRaw() until event=="key" or event=="terminate"
+    print("Press SPACE to continue.")
+    local event, key
+    repeat event,key=os.pullEventRaw() until event=="terminate" or (event=="key" and key==keys.space)
     return event~="terminate"
 end
 
 local function trim(value)
     return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-end
-
-local function multipartForm(fields)
-    local boundary = "----HCCOSBootLog"..tostring(math.random(100000, 999999))
-    local lines = {}
-    for _, field in ipairs(fields) do
-        lines[#lines+1] = "--"..boundary
-        lines[#lines+1] = "Content-Disposition: form-data; name=\""..field.name.."\""
-        lines[#lines+1] = ""
-        lines[#lines+1] = tostring(field.value or "")
-    end
-    lines[#lines+1] = "--"..boundary.."--"
-    return table.concat(lines, "\r\n").."\r\n", boundary
 end
 
 local function loadModule(path)
@@ -138,14 +125,23 @@ function Recovery:uploadBootLog()
         return
     end
 
-    local url = "https://dpaste.org/api/"
-    local body, boundary = multipartForm({
-        {name="content", value=log},
-        {name="format", value="url"},
-        {name="expires", value="3600"}
+    local url = "https://paste.msk-scripts.de/api/pastes"
+    if type(textutils) ~= "table" or type(textutils.serializeJSON) ~= "function" then
+        self:message("Upload unavailable: JSON encoder is not available.")
+        return
+    end
+    local encodeOk, body = pcall(textutils.serializeJSON, {
+        content=log,
+        title="HCC OS Boot Log",
+        language="plaintext",
+        expiresIn="1h"
     })
+    if not encodeOk or type(body) ~= "string" or body == "" then
+        self:message("Upload unavailable: request body could not be encoded.")
+        return
+    end
     local headers = {
-        ["Content-Type"] = "multipart/form-data; boundary="..boundary,
+        ["Content-Type"] = "application/json",
         ["User-Agent"] = "HCC-OS-Recovery/1.5"
     }
     local timerId
@@ -207,13 +203,19 @@ function Recovery:uploadBootLog()
         self:message("Upload failed: HTTP "..tostring(responseCode)..".")
         return
     end
-    local pasteUrl = trim(responseBody):match("(https://[^%s]+)")
+    local pasteUrl
+    if type(textutils) == "table" and type(textutils.unserializeJSON) == "function" then
+        local decodeOk, result = pcall(textutils.unserializeJSON, responseBody)
+        if decodeOk and type(result) == "table" and type(result.url) == "string" then
+            pasteUrl = trim(result.url)
+        end
+    end
     if not pasteUrl then
         self:message("Upload failed: server did not return a paste URL.")
         return
     end
     pcall(function() self.context.logger:info("Boot log uploaded: "..pasteUrl) end)
-    self:message("Boot log uploaded. It is unlisted and expires in 1 hour.")
+    self:message("Boot log uploaded. Unlisted (link-only); expires in 1 hour.")
     self:message(pasteUrl)
 end
 
