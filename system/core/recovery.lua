@@ -50,6 +50,18 @@ local function pause()
     return event~="terminate"
 end
 
+local function formEncode(value)
+    value = tostring(value or "")
+    value = value:gsub("([^%w%-_%.~ ])", function(character)
+        return string.format("%%%02X", string.byte(character))
+    end)
+    return value:gsub(" ", "+")
+end
+
+local function trim(value)
+    return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
 local function loadModule(path)
     local f, err = fs.open(path, "r")
     if not f then return nil, err end
@@ -105,6 +117,97 @@ function Recovery:resetSettings()
     self:message(ok and "Settings reset. User files were kept." or ("Reset failed: "..tostring(err)))
 end
 
+function Recovery:uploadBootLog()
+    local log = ""
+    local readOk, value = pcall(function() return self.context.logger:read() end)
+    if readOk and type(value) == "string" then log = value end
+    if log == "" then
+        self:message("Boot log is empty. Nothing to upload.")
+        return
+    end
+    if #log > 20000 then
+        log = log:sub(1, 6000).."\n...[middle omitted for upload size]...\n"..log:sub(-14000)
+    end
+    if type(http) ~= "table" or type(http.request) ~= "function" then
+        self:message("Upload unavailable: CC:T HTTP request API is disabled.")
+        return
+    end
+
+    local url = "https://dpaste.org/api/"
+    local body = "content="..formEncode(log).."&format=url&expires=3600"
+    local headers = {
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["User-Agent"] = "HCC-OS-Recovery/1.5"
+    }
+    local timerId
+    if type(os) == "table" and type(os.startTimer) == "function" then
+        local timerOk, value = pcall(os.startTimer, 15)
+        if timerOk then timerId = value end
+    end
+    if not timerId then
+        self:message("Upload unavailable: timeout timer API is disabled.")
+        return
+    end
+    local requestOk, accepted = pcall(http.request, url, body, headers, false)
+    if not requestOk or accepted == false or accepted == nil then
+        if type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
+        self:message("Upload failed: HTTP request was denied or could not start.")
+        return
+    end
+
+    local response, failure
+    while true do
+        local event, eventUrl, payload = os.pullEventRaw()
+        if event == "terminate" then
+            if timerId and type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
+            self:message("Upload cancelled.")
+            return
+        elseif event == "http_success" and eventUrl == url then
+            response = payload
+            break
+        elseif event == "http_failure" and eventUrl == url then
+            failure = payload
+            break
+        elseif event == "timer" and eventUrl == timerId then
+            failure = "request timed out"
+            break
+        end
+    end
+    if timerId and type(os.cancelTimer) == "function" then pcall(os.cancelTimer, timerId) end
+    if failure then
+        pcall(function() self.context.logger:warn("Boot log upload failed: "..tostring(failure)) end)
+        self:message("Upload failed: "..tostring(failure))
+        return
+    end
+    if type(response) ~= "table" or type(response.readAll) ~= "function" then
+        self:message("Upload failed: server returned an invalid response.")
+        return
+    end
+    local readResponseOk, responseBody = pcall(response.readAll)
+    if type(response.close) == "function" then pcall(response.close) end
+    if not readResponseOk then
+        self:message("Upload failed: server response could not be read.")
+        return
+    end
+    local responseCode = 200
+    if type(response.getResponseCode) == "function" then
+        local codeOk, code = pcall(response.getResponseCode)
+        if codeOk and tonumber(code) then responseCode = tonumber(code) end
+    end
+    if responseCode < 200 or responseCode >= 300 then
+        self:message("Upload failed: HTTP "..tostring(responseCode)..".")
+        return
+    end
+    local pasteUrl = trim(responseBody):match("(https://[^%s]+)")
+    if not pasteUrl then
+        self:message("Upload failed: server did not return a paste URL.")
+        return
+    end
+    pcall(function() self.context.logger:info("Boot log uploaded: "..pasteUrl) end)
+    self:message("Boot log uploaded. It is unlisted and expires in 1 hour.")
+    self:message(pasteUrl)
+end
+
 function Recovery:run(reason)
     self.reason = reasonText(reason)
     while true do
@@ -118,7 +221,7 @@ function Recovery:run(reason)
         print("")
         local options = {
             "Start HCC OS", "Rollback", "Repair", "Reset Settings",
-            "Boot Log", "Reinstall", "CC:T Shell"
+            "Boot Log", "Reinstall", "CC:T Shell", "Upload Boot Log (1h)"
         }
         for i, label in ipairs(options) do print((i == self.selected and "> " or "  ")..i..". "..label) end
         print("")
@@ -137,7 +240,8 @@ function Recovery:run(reason)
                 elseif self.selected == 4 then self:resetSettings(); if not pause() then return "terminate" end
                 elseif self.selected == 5 then print(self.context.logger:read()); if not pause() then return "terminate" end
                 elseif self.selected == 6 then self:reinstall(); if not pause() then return "terminate" end
-                elseif self.selected == 7 then shell.run("/rom/programs/shell"); if not pause() then return "terminate" end end
+                elseif self.selected == 7 then shell.run("/rom/programs/shell"); if not pause() then return "terminate" end
+                elseif self.selected == 8 then self:uploadBootLog(); if not pause() then return "terminate" end end
             elseif key == keys.escape then return "start" end
         end
     end
