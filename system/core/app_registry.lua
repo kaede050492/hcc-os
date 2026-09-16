@@ -85,11 +85,20 @@ end
 function Registry:scan()
     local entries,errors={},{}
     local names={}
-    if fs.exists(self.root) and fs.isDir(self.root) then names=fs.list(self.root) end
+    local rootExists,rootExistsValue=pcall(fs.exists,self.root)
+    local rootIsDir,rootDir=pcall(fs.isDir,self.root)
+    if rootExists and rootExistsValue and rootIsDir and rootDir then
+        local listed,list=pcall(fs.list,self.root)
+        if listed and type(list)=="table" then names=list
+        else errors[#errors+1]="cannot list application directory: "..tostring(list) end
+    end
     table.sort(names)
     for _,name in ipairs(names) do
         local path=fs.combine(self.root,name)
-        if fs.isDir(path) and fs.exists(fs.combine(path,"manifest.lua")) and fs.exists(fs.combine(path,"app.lua")) then
+        local dirOk,isDir=pcall(fs.isDir,path)
+        local manifestOk,hasManifest=pcall(fs.exists,fs.combine(path,"manifest.lua"))
+        local appOk,hasApp=pcall(fs.exists,fs.combine(path,"app.lua"))
+        if dirOk and isDir and manifestOk and hasManifest and appOk and hasApp then
             local manifest,err=readLuaTable(fs.combine(path,"manifest.lua"))
             local entry,entryError=manifest and self:manifestEntry(name,manifest)
             if not entry then
