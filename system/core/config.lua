@@ -35,7 +35,12 @@ local defaults = {
     autoUpdateCheck = false,
     updateRepository = "https://github.com/kaede050492/hcc-os",
     computerId = "",
-    logLimit = 400
+    logLimit = 400,
+    networkRefresh = 3,
+    resourceRefresh = 2,
+    maxImageDownload = 4194304,
+    imageCacheLimit = 4194304,
+    imageCacheEnabled = true
 }
 
 local function copy(source)

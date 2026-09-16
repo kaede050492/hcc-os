@@ -37,7 +37,6 @@ local function runInternal(arguments)
     local Config = loadModule(base.."core/config.lua")
     local Remote = loadModule(base.."core/remote.lua")
     local Updater = loadModule(base.."core/updater.lua")
-    local Setup = loadModule(base.."core/setup.lua")
     local Recovery = loadModule(base.."core/recovery.lua")
     local Widgets = loadModule(base.."ui/widgets.lua")
     local Icons = loadModule(base.."ui/icons.lua")
@@ -106,12 +105,11 @@ local function runInternal(arguments)
         resetSettings=function() return config:reset() end,
         bootLog=function() return logger:read() end
     }
+    context.api = _G.HCCV14
 
     if arguments[1] == "--recovery" then
         return Recovery.new(context):run("manual recovery request")
     end
-    if config:isFirstBoot() then Setup.run(config, Remote, logger) end
-
     if config.data.autoUpdateCheck then
         logger:info("Automatic update check scheduled after desktop start")
         -- The legacy desktop receives no blocking HTTP call here. The Update &

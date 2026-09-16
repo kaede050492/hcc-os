@@ -12,7 +12,7 @@ end
 
 function UpdateRecovery:init()
     self.env = self.env or UpdateRecovery.environment
-    self.api = _G.HCCV14
+    self.api = UpdateRecovery.api or self.env.HCCV14
     self.api.updateWindow = self.win
     self.status = self.api.autoUpdatePending and "Automatic check pending" or "Ready"
     self.result = nil
@@ -118,6 +118,7 @@ end
 
 function UpdateRecovery.attach(environment, api)
     UpdateRecovery.environment = environment
+    UpdateRecovery.api = api
     environment.register("updates", "Update & Recovery", "UP", 430, 190, UpdateRecovery)
 end
 
