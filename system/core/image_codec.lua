@@ -141,11 +141,19 @@ local function reverseBits(value,count)
 end
 local function huffmanBuild(lengths)
     local count={}; for i=1,15 do count[i]=0 end
-    for _,len in ipairs(lengths) do if len>0 then count[len]=count[len]+1 end end
+    for _,len in ipairs(lengths) do
+        if type(len)~="number" or len~=floor(len) or len<0 or len>15 then error("invalid DEFLATE Huffman code length") end
+        if len>0 then count[len]=count[len]+1 end
+    end
     local nextCode={}; local code=0
     for bits=1,15 do code=(code+(count[bits-1] or 0))*2; nextCode[bits]=code end
     local tree={}
-    for symbol,len in ipairs(lengths) do if len>0 then tree[len]=tree[len] or {}; tree[len][reverseBits(nextCode[len],len)]=symbol-1; nextCode[len]=nextCode[len]+1 end end
+    for symbol,len in ipairs(lengths) do
+        if len>0 then
+            if nextCode[len]>=2^len then error("oversubscribed DEFLATE Huffman table") end
+            tree[len]=tree[len] or {}; tree[len][reverseBits(nextCode[len],len)]=symbol-1; nextCode[len]=nextCode[len]+1
+        end
+    end
     return tree
 end
 local function huffmanDecode(reader,tree)
@@ -160,6 +168,7 @@ end
 local function newBitReader(data)
     local reader={data=data,pos=1,bits=0,buffer=0}
     function reader:readBits(count)
+        if type(count)~="number" or count~=floor(count) or count<0 or count>16 then return nil,"invalid DEFLATE bit count" end
         while self.bits<count do
             local byte=self.data:byte(self.pos); if not byte then return nil,"unexpected end of compressed data" end
             self.pos=self.pos+1; self.buffer=self.buffer+byte*2^self.bits; self.bits=self.bits+8
@@ -168,6 +177,11 @@ local function newBitReader(data)
     end
     function reader:align() self.bits=0; self.buffer=0 end
     return reader
+end
+local function deflateBits(reader,count,reason)
+    local value,err=reader:readBits(count)
+    if type(value)~="number" then error(reason or ("truncated DEFLATE input: "..tostring(err))) end
+    return value
 end
 local fixedLit,fixedDist
 do
@@ -182,43 +196,58 @@ local distanceExtra={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,
 local function inflateRaw(data,limit,yieldFn)
     local reader=newBitReader(data); local output={}; local size=0; local final=false
     local function put(value)
+        if type(value)~="number" then error("invalid DEFLATE byte") end
         size=size+1; if size>limit then error("decoded image exceeds safety limit") end
         output[size]=string.char(value%256)
         if yieldFn and size%4096==0 then yieldFn(size) end
     end
     while not final do
-        final=reader:readBits(1)==1; local kind=reader:readBits(2); if kind==nil then error("invalid DEFLATE header") end
+        final=deflateBits(reader,1,"truncated DEFLATE header")==1
+        local kind=deflateBits(reader,2,"truncated DEFLATE header")
         local litTree,distTree
         if kind==0 then
-            reader:align(); local len=reader:readBits(16); local nlen=reader:readBits(16); if not len or not nlen or (len%65536+nlen%65536)~=65535 then error("invalid stored DEFLATE block") end
-            for _=1,len do local value=reader:readBits(8); if value==nil then error("truncated stored block") end; put(value) end
+            reader:align(); local len=deflateBits(reader,16,"truncated stored DEFLATE block"); local nlen=deflateBits(reader,16,"truncated stored DEFLATE block"); if (len%65536+nlen%65536)~=65535 then error("invalid stored DEFLATE block") end
+            for _=1,len do put(deflateBits(reader,8,"truncated stored DEFLATE block")) end
         else
             if kind==1 then litTree,distTree=fixedLit,fixedDist
             elseif kind==2 then
-                local hlit=reader:readBits(5)+257; local hdist=reader:readBits(5)+1; local hclen=reader:readBits(4)+4
+                local hlit=deflateBits(reader,5,"truncated DEFLATE dynamic header")+257
+                local hdist=deflateBits(reader,5,"truncated DEFLATE dynamic header")+1
+                local hclen=deflateBits(reader,4,"truncated DEFLATE dynamic header")+4
                 local order={16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1}; local cl={}; for i=1,19 do cl[i]=0 end
-                for i=1,hclen do cl[order[i]+1]=reader:readBits(3) end
+                for i=1,hclen do
+                    local orderIndex=order[i]
+                    if type(orderIndex)~="number" then error("invalid DEFLATE code length order") end
+                    cl[orderIndex+1]=deflateBits(reader,3,"truncated DEFLATE code length")
+                end
                 local codeTree=huffmanBuild(cl); local all={}; local need=hlit+hdist
                 while #all<need do
-                    local symbol=huffmanDecode(reader,codeTree); if symbol==nil then error("invalid DEFLATE code lengths") end
+                    local symbol,decodeError=huffmanDecode(reader,codeTree); if type(symbol)~="number" then error("invalid DEFLATE code lengths: "..tostring(decodeError)) end
                     if symbol<=15 then all[#all+1]=symbol
                     elseif symbol==16 then
-                        local repeatCount=reader:readBits(2)+3; local previous=all[#all] or 0; for _=1,repeatCount do all[#all+1]=previous end
-                    elseif symbol==17 then for _=1,reader:readBits(3)+3 do all[#all+1]=0 end
-                    elseif symbol==18 then for _=1,reader:readBits(7)+11 do all[#all+1]=0 end end
+                        if #all==0 then error("invalid DEFLATE code length repeat") end
+                        local repeatCount=deflateBits(reader,2,"truncated DEFLATE code length repeat")+3; local previous=all[#all]; for _=1,repeatCount do all[#all+1]=previous end
+                    elseif symbol==17 then for _=1,deflateBits(reader,3,"truncated DEFLATE code length repeat")+3 do all[#all+1]=0 end
+                    elseif symbol==18 then for _=1,deflateBits(reader,7,"truncated DEFLATE code length repeat")+11 do all[#all+1]=0 end
+                    else error("invalid DEFLATE code length symbol") end
                     if #all>need then error("DEFLATE code length overflow") end
                 end
                 local ll={}; for i=1,hlit do ll[i]=all[i] end; local dd={}; for i=1,hdist do dd[i]=all[hlit+i] end
                 litTree,distTree=huffmanBuild(ll),huffmanBuild(dd)
             else error("reserved DEFLATE block") end
             while true do
-                local symbol=huffmanDecode(reader,litTree); if symbol==nil then error("invalid DEFLATE literal") end
+                local symbol,decodeError=huffmanDecode(reader,litTree); if type(symbol)~="number" then error("invalid DEFLATE literal: "..tostring(decodeError)) end
                 if symbol<256 then put(symbol)
                 elseif symbol==256 then break
                 elseif symbol<=285 then
-                    local index=symbol-256; local length=lengthBase[index]+reader:readBits(lengthExtra[index]); local ds=huffmanDecode(reader,distTree); if not ds or ds>29 then error("invalid DEFLATE distance") end
-                    local distance=distanceBase[ds+1]+reader:readBits(distanceExtra[ds+1]); if distance>size then error("DEFLATE distance outside output") end
-                    for _=1,length do local from=size-distance+1; put(tonumber(output[from]:byte())) end
+                    local index=symbol-256; local base,extra=lengthBase[index],lengthExtra[index]
+                    if type(base)~="number" or type(extra)~="number" then error("invalid DEFLATE length") end
+                    local length=base+deflateBits(reader,extra,"truncated DEFLATE length")
+                    local ds,distanceError=huffmanDecode(reader,distTree); if type(ds)~="number" or ds<0 or ds>29 then error("invalid DEFLATE distance: "..tostring(distanceError)) end
+                    local distanceBaseValue,distanceBits=distanceBase[ds+1],distanceExtra[ds+1]
+                    if type(distanceBaseValue)~="number" or type(distanceBits)~="number" then error("invalid DEFLATE distance") end
+                    local distance=distanceBaseValue+deflateBits(reader,distanceBits,"truncated DEFLATE distance"); if distance>size then error("DEFLATE distance outside output") end
+                    for _=1,length do local from=size-distance+1; local byte=output[from]; if type(byte)~="string" then error("invalid DEFLATE back-reference") end; put(byte:byte()) end
                 else error("invalid DEFLATE length") end
             end
         end
@@ -229,23 +258,36 @@ local function be16(s,p) local a,b=s:byte(p,p+1); if not a or not b then error("
 local function be32(s,p) local a,b,c,d=s:byte(p,p+3); if not d then error("truncated image") end; return ((a*256+b)*256+c)*256+d end
 local function paeth(a,b,c) local p=a+b-c; local pa=math.abs(p-a); local pb=math.abs(p-b); local pc=math.abs(p-c); return pa<=pb and pa<=pc and a or (pb<=pc and b or c) end
 function pngDecode(body,yieldFn)
+    if type(body)~="string" then error("invalid PNG data") end
     if body:sub(1,8)~=string.char(137,80,78,71,13,10,26,10) then error("not a PNG") end
     local pos=9; local width,height,depth,colorType; local palette,transparency={},{ }; local idat={}; local interlace
+    local hasIHDR,hasIDAT,hasIEND=false,false,false
     while pos<=#body do
         local length=be32(body,pos); pos=pos+4; if length<0 or pos+length+7>#body then error("invalid PNG chunk length") end
         local kind=body:sub(pos,pos+3); pos=pos+4; local chunk=body:sub(pos,pos+length-1); pos=pos+length+4
-        if kind=="IHDR" then width,height=be32(chunk,1),be32(chunk,5); depth=chunk:byte(9); colorType=chunk:byte(10); interlace=chunk:byte(13)
-        elseif kind=="PLTE" then for i=1,#chunk,3 do palette[#palette+1]={chunk:byte(i) or 0,chunk:byte(i+1) or 0,chunk:byte(i+2) or 0} end
+        if kind=="IHDR" then
+            if hasIHDR or #chunk~=13 then error("invalid PNG IHDR") end
+            width,height=be32(chunk,1),be32(chunk,5); depth=chunk:byte(9); colorType=chunk:byte(10); interlace=chunk:byte(13); hasIHDR=true
+        elseif kind=="PLTE" then
+            if not hasIHDR or #chunk==0 or #chunk%3~=0 then error("invalid PNG palette") end
+            for i=1,#chunk,3 do palette[#palette+1]={chunk:byte(i),chunk:byte(i+1),chunk:byte(i+2)} end
         elseif kind=="tRNS" then for i=1,#chunk do transparency[i]=chunk:byte(i) end
-        elseif kind=="IDAT" then idat[#idat+1]=chunk
-        elseif kind=="IEND" then break end
+        elseif kind=="IDAT" then
+            if not hasIHDR then error("PNG IDAT before IHDR") end
+            hasIDAT=true; idat[#idat+1]=chunk
+        elseif kind=="IEND" then hasIEND=true; break end
     end
+    if not hasIHDR then error("PNG has no IHDR") end
+    if not hasIDAT then error("PNG has no IDAT data") end
+    if not hasIEND then error("PNG is missing IEND") end
     if not width or not height or width<1 or height<1 or width>1024 or height>768 or width*height>262144 then error("PNG dimensions are unsafe") end
+    if type(depth)~="number" or type(colorType)~="number" or type(interlace)~="number" then error("truncated PNG IHDR") end
     if interlace~=0 then error("interlaced PNG is not supported") end
     local channels=({[0]=1,[2]=3,[3]=1,[4]=2,[6]=4})[colorType]; if not channels then error("unsupported PNG color type") end
     if depth~=1 and depth~=2 and depth~=4 and depth~=8 and depth~=16 then error("unsupported PNG bit depth") end
     if colorType==3 and #palette==0 then error("indexed PNG has no palette") end
-    local rowBytes=math.ceil(width*channels*depth/8); local bpp=max(1,math.ceil(channels*depth/8)); local compressed=table.concat(idat); if #compressed<6 or (compressed:byte(1)%16)~=8 then error("invalid PNG zlib stream") end
+    local rowBytes=math.ceil(width*channels*depth/8); local bpp=max(1,math.ceil(channels*depth/8)); local compressed=table.concat(idat); local cmf,flg=compressed:byte(1,2)
+    if #compressed<6 or not cmf or not flg or cmf%16~=8 or (cmf*256+flg)%31~=0 then error("invalid PNG zlib stream") end
     local raw=inflateRaw(compressed:sub(3,#compressed-4),max(1024*1024,width*(rowBytes+1)*height+64),yieldFn)
     if #raw<height*(rowBytes+1) then error("PNG scanlines are truncated") end
     local previous={}; local pixels={}; local rp=1

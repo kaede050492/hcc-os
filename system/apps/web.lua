@@ -203,7 +203,13 @@ function Web:updateV131()
     end
     if job.stage=="convert" then
         local ok,a,b,c,d,e=coroutine.resume(job.co)
-        if not ok then local item=job.item; self.job=nil; if item then item.status="failed"; webImageStatusLine(self.lines,item.index,"failed"); self:markV131(); self:queueNextImageV131() else self.status="Image conversion failed"; self.lines={tostring(a)}; self:markV131() end; return end
+        if not ok then
+            local reason=tostring(a or "unknown image decoder error")
+            local item=job.item; self.job=nil; self.status="Image conversion failed: "..reason
+            if item then item.status="failed"; webImageStatusLine(self.lines,item.index,"failed: "..reason:sub(1,96)); self:markV131(); self:queueNextImageV131()
+            else self.lines={"Image conversion failed:",reason}; self:markV131() end
+            return
+        end
         if coroutine.status(job.co)=="dead" then self:finishImageV131(job.item,a,d,e) else self:progressV131(a,b) end
     end
 end
