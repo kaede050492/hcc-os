@@ -103,12 +103,18 @@ local function drawImage(c,data,x,y,w,h,mode,zoom,offsetX,offsetY)
     end
 end
 local wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
+local nativeWallpaperLoad
+local function clearWallpaperCache()
+    if wallpaperCache.data and wallpaperCache.data.native and type(Driver)=="table" and type(Driver.freeNativeImage)=="function" then Driver.freeNativeImage(wallpaperCache.data) end
+    wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
+end
 local function getWallpaper()
     if cfg.wallpaperMode=="black" or cfg.wallpaperPath=="" then return nil end
     local key=cfg.wallpaperPath
     if wallpaperCache.path==key and wallpaperCache.data then return wallpaperCache.data end
-    local data,err=imageRead(cfg.wallpaperPath)
-    if not data then logLine("WARN","Wallpaper unavailable: "..tostring(err)); cfg.wallpaperMode="black"; wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}; return nil end
+    local data,err
+    if cfg.wallpaperPath:lower():match("%.png$") and nativeWallpaperLoad then data,err=nativeWallpaperLoad(cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK) else data,err=imageRead(cfg.wallpaperPath) end
+    if not data then logLine("WARN","Wallpaper unavailable: "..tostring(err)); cfg.wallpaperMode="black"; clearWallpaperCache(); return nil end
     wallpaperCache.path=key; wallpaperCache.data=data; wallpaperCache.renderKey=nil; wallpaperCache.commands=nil; return data
 end
 local function wallpaperCommands()
@@ -116,7 +122,7 @@ local function wallpaperCommands()
     local key=table.concat({cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK},"|")
     if cfg.wallpaperCache and wallpaperCache.commands and wallpaperCache.renderKey==key then return wallpaperCache.commands end
     local list={}; local c=canvas(list,0,0,Driver.w,Driver.h-TASK)
-    drawImage(c,data,0,0,Driver.w,Driver.h-TASK,cfg.wallpaperMode,1,0,0)
+    if data.native then c:nativeImage(0,0,data,"center") else drawImage(c,data,0,0,Driver.w,Driver.h-TASK,cfg.wallpaperMode,1,0,0) end
     if cfg.wallpaperCache then wallpaperCache.renderKey=key; wallpaperCache.commands=list end
     return list
 end
@@ -650,6 +656,32 @@ local function imageDeleteNativePng(path)
     if fs.exists(path) then return pcall(fs.delete,path) end
     return true
 end
+local function imagePersistNativePng(path,key)
+    if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid PNG source path" end
+    local ok,result=pcall(function()
+        if not fs.exists(imageDir) then fs.makeDir(imageDir) end
+        local destination=fs.combine(imageDir,"wallpaper_"..imageHash(tostring(key or path))..".png")
+        if path~=destination then
+            if fs.exists(destination) then fs.delete(destination) end
+            fs.copy(path,destination)
+        end
+        return destination
+    end)
+    if not ok then return nil,tostring(result) end
+    return result
+end
+nativeWallpaperLoad=function(path,mode,targetW,targetH)
+    local ok,body=pcall(readFile,path,cfg.maxImageDownload)
+    if not ok then return nil,tostring(body) end
+    local native,nativeError=imageDecodeNativePng(body)
+    if native and mode=="center" and native.width<=targetW and native.height<=targetH then return native end
+    if native then imageFreeNativePng(native) end
+    local decoded,decodeError=pcall(pngDecode,body)
+    if not decoded then return nil,tostring(nativeError or decodeError) end
+    local data=imagePrepare(decodeError,targetW,targetH)
+    if not data then return nil,"PNG wallpaper conversion failed" end
+    return data
+end
 function imagePrepare(data,targetW,targetH,progress)
     targetW=max(1,min(576,floor(targetW or 576))); targetH=max(1,min(320,floor(targetH or 320))); local candidates={{1,"16"},{0.8333,"12"},{0.6667,"8"},{0.5,"8"}}; local lastData,lastStored,lastSize
     for _,candidate in ipairs(candidates) do
@@ -661,7 +693,7 @@ function imagePrepare(data,targetW,targetH,progress)
     return lastData,lastStored,lastSize
 end
 end
-E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng
-E.resetWallpaperCache=function() wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil} end
+E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
+E.resetWallpaperCache=clearWallpaperCache
 
 end

@@ -1,7 +1,26 @@
 -- HCC OS v1.4 GUI application module.
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
-    local _ENV=env
+local _ENV=env
+local function nativeDecode(body)
+    if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
+    return nil,"Tom's GPU native PNG backend unavailable"
+end
+local function nativeStage(body,key)
+    if type(E.imageStageNativePng)=="function" then return E.imageStageNativePng(body,key) end
+    return nil,"Tom's GPU native PNG staging unavailable"
+end
+local function nativeFree(record)
+    if type(E.imageFreeNativePng)=="function" then E.imageFreeNativePng(record) end
+end
+local function nativeDelete(path)
+    if type(E.imageDeleteNativePng)=="function" then return E.imageDeleteNativePng(path) end
+    return false,"Tom's GPU native PNG cleanup unavailable"
+end
+local function persistNativePng(path,key)
+    if type(E.imagePersistNativePng)=="function" then return E.imagePersistNativePng(path,key) end
+    return nil,"PNG wallpaper storage unavailable"
+end
 local function webUnescape(s)
     return tostring(s or ""):gsub("&amp;","&"):gsub("&lt;","<"):gsub("&gt;",">"):gsub("&quot;",'"'):gsub("&#39;","'")
 end
@@ -90,7 +109,7 @@ function Web:draw(c)
     for i=0,rows-1 do local line=self.lines[self.top+i]; if not line then break end; c:text(7,62+i*12,line,P.textPrimary) end
     c:text(6,c.h-14,string.format("%d lines  %d links  PgUp/PgDn scroll",#self.lines,#self.links),P.textSecondary)
 end
-register("web","HCC Web","WB",548,286,Web)
+register("web","HCC Web","WB",440,230,Web)
 
 -- HCC Web v1.3.1 image pipeline.  The old text-browser methods above remain
 -- as a compatibility baseline; these methods replace transport/rendering with
@@ -147,11 +166,11 @@ function Web:progressV131(stage,value)
     self.status=finite(value) and stage.." "..tostring(clamp(floor(value*100+0.5),0,100)).."%" or stage; self:markV131()
 end
 function Web:showImageV131(data,path,url,cacheHit)
-    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
+    if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end
     self.pageMode="image"; self.imageData=data; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view",cacheHit and "Loaded from Image Cache" or "PNG/JPEG converted to HCCI v2"}; self.status=cacheHit and "Image Cache hit" or "Image ready"; self:markV131()
 end
 function Web:showNativeImageV131(native,path,url)
-    if self.nativeImage and self.nativeImage~=native then imageFreeNativePng(self.nativeImage) end
+    if self.nativeImage and self.nativeImage~=native then nativeFree(self.nativeImage) end
     self.pageMode="image"; self.imageData=nil; self.nativeImage=native; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view","PNG decoded by Tom's GPU"}; self.status="Native PNG ready"; self:markV131()
 end
 function Web:finishNativeImageV131(item,native,path,url)
@@ -172,13 +191,13 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     local kind=self:imageKindV131(url,ctype); if not kind then return false,"unsupported image type" end
     local alias=self:cacheAliasV131(url,targetW,targetH); local exact=self:cacheKeyV131(url,targetW,targetH,ctype,length); local cached=imageCacheLoad(alias)
     if kind=="png" then
-        local native,nativeError=imageDecodeNativePng(body)
+        local native,nativeError=nativeDecode(body)
         if native and native.width<=targetW-4 and native.height<=targetH-4 then
-            local path,stageError=imageStageNativePng(body,url)
+            local path,stageError=nativeStage(body,url)
             if path then self:finishNativeImageV131(item,native,path,url); return true end
-            imageFreeNativePng(native); nativeError=stageError
+            nativeFree(native); nativeError=stageError
         elseif native then
-            imageFreeNativePng(native); nativeError="native PNG exceeds the available viewport"
+            nativeFree(native); nativeError="native PNG exceeds the available viewport"
         end
         if nativeError then self.cacheNotice="Native PNG fallback: "..tostring(nativeError):sub(1,72) end
     end
@@ -255,7 +274,7 @@ function Web:initV131(url)
 end
 function Web:loadV131(url,record)
     url=webSafeUrl(url); if not url then self.status="Invalid URL"; self.lines={"Only http:// and https:// URLs are allowed."}; self:markV131(); return false end
-    self:cancelJobV131(); if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then imageFreeNativePng(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do imageDeleteNativePng(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
+    self:cancelJobV131(); if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
     if record~=false then for i=#self.history,self.historyIndex+1,-1 do table.remove(self.history,i) end; self.history[#self.history+1]=url; self.historyIndex=#self.history end
     local kind=self:imageKindV131(url,""); if kind then local tw=max(64,min(576,(self.win and self.win.w or 576)-14)); local th=max(64,min(320,(self.win and self.win.h or 320)-TITLE-115)); local alias=self:cacheAliasV131(url,tw,th); local cached=imageCacheLoad(alias); if cached then self:showImageV131(cached,imageCachePath(alias),url,true); return true end end
     local ok,err=self:startRequestV131(url,"page",nil,nil,nil); if not ok then self.status=tostring(err); self.lines={tostring(err)}; self:markV131(); return false end; self:markV131(); return true
@@ -268,6 +287,13 @@ function Web:saveHcciV131()
     dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,"/.hccos/images/web_image.hcci")
 end
 function Web:setWallpaperV131()
+    if self.nativeImage and self.imagePath then
+        local path,storeError=persistNativePng(self.imagePath,self.url)
+        if not path then errorBox(storeError); return end
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
+        if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
+        return
+    end
     if not self.imageData then return end; local path=self.imagePath; if not path then local alias=self:cacheAliasV131(self.url,576,320); local ok=imageCacheSave(alias,self.imageData); if ok then path=imageCachePath(alias); self.imagePath=path end end
     if not path then errorBox("Image cache unavailable; save as HCCI first"); return end
     cfg.wallpaperPath=path; cfg.wallpaperMode="fit"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty(); if ok then notify("Wallpaper set from converted HCCI",P.success) else errorBox(err) end
@@ -275,9 +301,9 @@ end
 function Web:downloadV131() Web.download(self) end
 function Web:closeV131()
     self:cancelJobV131()
-    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
-    for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then imageFreeNativePng(item.nativeImage); item.nativeImage=nil end end
-    for path in pairs(self.nativeTempPaths or {}) do imageDeleteNativePng(path) end
+    if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end
+    for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage); item.nativeImage=nil end end
+    for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end
     self.nativeTempPaths={}
 end
 function Web:drawV131(c)

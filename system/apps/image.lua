@@ -1,7 +1,18 @@
 -- HCC OS v1.4 GUI application module.
 return function(E)
     local env=setmetatable({Driver=E.AppDriver,OS=E.AppOS},{__index=E})
-    local _ENV=env
+local _ENV=env
+local function nativeDecode(body)
+    if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
+    return nil,"Tom's GPU native PNG backend unavailable"
+end
+local function nativeFree(record)
+    if type(E.imageFreeNativePng)=="function" then E.imageFreeNativePng(record) end
+end
+local function persistNativePng(path,key)
+    if type(E.imagePersistNativePng)=="function" then return E.imagePersistNativePng(path,key) end
+    return nil,"PNG wallpaper storage unavailable"
+end
 local ImageViewer={}
 function ImageViewer:init(path)
     self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.nativeImage=nil; self.error=nil
@@ -9,19 +20,19 @@ function ImageViewer:init(path)
     if type(path)=="string" and path~="" then self:loadPath(path) elseif self.images[1] then self:loadPath(self.images[1]) end
 end
 function ImageViewer:releaseNative()
-    if self.nativeImage then imageFreeNativePng(self.nativeImage); self.nativeImage=nil end
+    if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end
 end
 function ImageViewer:loadPath(path)
     self:releaseNative(); self.error=nil
     if tostring(path):lower():match("%.png$") then
         local ok,body=pcall(readFile,path,cfg.maxImageDownload)
         if not ok then self.error=tostring(body); mark(self.win); return false end
-        local native,nativeError=imageDecodeNativePng(body)
+        local native,nativeError=nativeDecode(body)
         local availableW=max(1,(self.win and self.win.w or 530)-165); local availableH=max(1,(self.win and self.win.h or 282)-80)
         if native and native.width<=availableW and native.height<=availableH then
             self.path=path; self.data=nil; self.nativeImage=native; self.offsetX=0; self.offsetY=0; mark(self.win); return true
         end
-        if native then imageFreeNativePng(native) end
+        if native then nativeFree(native) end
         local decoded,decodeError=pcall(pngDecode,body)
         if decoded then
             local data=imagePrepare(decodeError,availableW,availableH)
@@ -70,6 +81,14 @@ function ImageViewer:importUrl()
     end,"https://example.com/image.hcci")
 end
 function ImageViewer:setWallpaper()
+    if self.nativeImage and self.path then
+        local path,storeError=persistNativePng(self.path,self.path)
+        if not path then errorBox(storeError); return end
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"
+        resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
+        if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
+        return
+    end
     if not self.data or not self.path then errorBox("Save the image before using it as wallpaper"); return end
     cfg.wallpaperPath=self.path; cfg.wallpaperMode=({fit=true,fill=true,center=true,tile=true})[self.mode] and self.mode or "fit"
     resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
