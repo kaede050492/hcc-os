@@ -20,6 +20,8 @@ local function playerColor(name)
 end
 local MAX_SCAN_PLAYERS=128
 local DETECTOR_CALL_TIMEOUT=1.25
+local MAX_PARALLEL_POSITION_CALLS=3
+local MIN_AUTO_SCAN_INTERVAL=1
 local function playerNames(value)
     if type(value)~="table" then return nil,"Detector returned an invalid player list" end
     local names,seen={},{}
@@ -37,13 +39,16 @@ end
 local Radar={}
 function Radar:init()
     self.players={}; self.records={}; self.pendingNames={}; self.dim=dimension(cfg.dimension); self.dims={self.dim}; self.page=1; self.range=256
-    self.scan=nil; self.call=nil; self.scanRequested=false; self.errorShown=false; self.online=0; self.unavailable=0; self.far=0; self.lastDetector=devices.detector
+    self.scan=nil; self.calls={}; self.scanRequested=false; self.autoScanEnabled=true; self.nextAutoScan=0; self.errorShown=false; self.online=0; self.unavailable=0; self.far=0; self.lastDetector=devices.detector
     self.message=nil; self.status=nil
     if devices.detector then self:requestScan() else self:detectorError("Player Detector is not connected.") end
 end
+function Radar:activeDetectorCalls()
+    local count=0; for _ in pairs(self.calls or {}) do count=count+1 end; return count
+end
 function Radar:interval() return (self.scan or next(self.pendingNames)) and 0.05 or cfg.radarInterval end
 function Radar:detectorError(message)
-    self:cancelDetectorCall(); self.scan=nil; self.scanRequested=false; self.players={}; self.records={}; self.pendingNames={}; self.online=0; self.unavailable=0; self.far=0; self.status=nil; self.message=message or "Player Detector error"
+    self:cancelDetectorCalls(); self.scan=nil; self.scanRequested=false; self.autoScanEnabled=false; self.players={}; self.records={}; self.pendingNames={}; self.online=0; self.unavailable=0; self.far=0; self.status=nil; self.message=message or "Player Detector error"
     if not self.errorShown and type(dialog)=="function" then
         self.errorShown=true
         dialog("Player Detector Error",self.message.." Connect the peripheral and press SCAN again.",{"OK"})
@@ -51,10 +56,10 @@ function Radar:detectorError(message)
     mark(self.win)
 end
 function Radar:requestScan()
-    self.errorShown=false; self.message=nil; self.status="Starting Player Detector scan..."; self.scanRequested=true
+    self.errorShown=false; self.message=nil; self.status="Starting Player Detector scan..."; self.scanRequested=true; self.autoScanEnabled=true
     if not devices.detector then self:detectorError("Player Detector is not connected."); return end
-    self:cancelDetectorCall()
-    self.scan={phase="online",names={},index=1,started=now(),method=nil}
+    self:cancelDetectorCalls()
+    self.scan={phase="online",names={},index=1,completed=0,inFlight=0,started=now(),method=nil}
     mark(self.win)
 end
 local function eventFields(name,a,b,c,d)
@@ -87,14 +92,15 @@ function Radar:rebuildFromRecords()
     mark(self.win)
 end
 Radar.rebuildFromEvents=Radar.rebuildFromRecords
-function Radar:cancelDetectorCall()
-    local call=self.call; if not call then return end
-    self.call=nil
-    if call.timeout then pcall(os.cancelTimer,call.timeout) end
+function Radar:cancelDetectorCalls()
+    for _,call in pairs(self.calls or {}) do
+        if call.timeout then pcall(os.cancelTimer,call.timeout) end
+    end
+    self.calls={}
 end
-function Radar:finishDetectorCall(ok,value,reason)
-    local call=self.call; if not call then return end
-    self.call=nil
+function Radar:finishDetectorCall(call,ok,value,reason)
+    if not call or self.calls[call.id]~=call then return end
+    self.calls[call.id]=nil
     if call.timeout then pcall(os.cancelTimer,call.timeout) end
     local callback=call.callback
     if type(callback)=="function" then
@@ -102,34 +108,35 @@ function Radar:finishDetectorCall(ok,value,reason)
         if not callbackOk then self:detectorError("Player Detector callback failed: "..tostring(callbackError)) end
     end
 end
-function Radar:resumeDetectorCall(...)
-    local call=self.call; if not call then return false end
+function Radar:resumeDetectorCall(call,...)
+    if not call or self.calls[call.id]~=call then return false end
     local ok,a,b=coroutine.resume(call.co,...)
-    if not ok then self:finishDetectorCall(false,nil,tostring(a)); return true end
-    if coroutine.status(call.co)=="dead" then self:finishDetectorCall(a,b,nil); return true end
+    if not ok then self:finishDetectorCall(call,false,nil,tostring(a)); return true end
+    if coroutine.status(call.co)=="dead" then self:finishDetectorCall(call,a,b,nil); return true end
     call.filter=a
     return true
 end
 function Radar:startDetectorCall(method,args,callback)
-    if self.call then return false end
+    if self:activeDetectorCalls()>=MAX_PARALLEL_POSITION_CALLS then return false end
     local detector=devices.detector
     local methodOk,fn=pcall(function() return detector and detector[method] end)
     if not methodOk or type(fn)~="function" then
         callback(false,nil,method.." is unavailable")
-        return false
+        return true
     end
-    local call={filter=nil,callback=callback,timeout=nil}
+    self.callSequence=(self.callSequence or 0)+1
+    local call={id=self.callSequence,filter=nil,callback=callback,timeout=nil}
     call.co=coroutine.create(function()
         local ok,value=pcall(fn,unpack(args or {}))
         return ok,value
     end)
     call.timeout=os.startTimer(DETECTOR_CALL_TIMEOUT)
-    self.call=call
-    self:resumeDetectorCall()
+    self.calls[call.id]=call
+    self:resumeDetectorCall(call)
     return true
 end
 function Radar:beginOnlineScan()
-    local scan=self.scan; if not scan or self.call then return end
+    local scan=self.scan; if not scan or self:activeDetectorCalls()>0 then return end
     local method=(devices.detectorApi and devices.detectorApi.getOnlinePlayers) and "getOnlinePlayers" or
         ((devices.detectorApi and devices.detectorApi.getPlayersInRange) and "getPlayersInRange" or nil)
     if not method then self:detectorError("This Player Detector has no supported player-list API"); return end
@@ -147,13 +154,13 @@ function Radar:beginPositionScan()
     local scan=self.scan; if not scan then return end
     self.records={}; self.pendingNames={}
     for _,name in ipairs(scan.names) do self.records[name]={name=name,color=playerColor(name)} end
-    scan.phase="position"; scan.index=1
+    scan.phase="position"; scan.index=1; scan.completed=0; scan.inFlight=0
     self.online=#scan.names
     self.status=string.format("Reading positions 0/%d...",#scan.names)
     self:rebuildFromRecords()
 end
 function Radar:finishScan()
-    self.scan=nil; self.scanRequested=false; self.status=nil
+    self.scan=nil; self.scanRequested=false; self.status=nil; self.nextAutoScan=now()+max(MIN_AUTO_SCAN_INTERVAL,tonumber(cfg.radarInterval) or MIN_AUTO_SCAN_INTERVAL)
     if self.online==0 then self.message="No players online. Press SCAN to retry." else self.message=nil end
     self:rebuildFromRecords()
 end
@@ -162,22 +169,30 @@ function Radar:stepScan()
     if scan.phase=="online" then
         self:beginOnlineScan(); return
     end
-    if self.call then return end
-    if scan.index>#scan.names then self:finishScan(); return end
-    local name=scan.names[scan.index]; local record=self.records[name]
-    self.status=string.format("Reading positions %d/%d...",scan.index-1,#scan.names); mark(self.win)
-    self:startDetectorCall("getPlayerPos",{name},function(ok,pos,reason)
-        if self.scan~=scan then return end
-        if ok and type(pos)=="table" then
-            record.x,record.y,record.z,record.yaw=pos.x,pos.y,pos.z,pos.yaw
-            record.dimension=dimension(pos.dimension or record.dimension); record.error=nil
-        else record.error=reason or tostring(pos or "Position unavailable") end
-        scan.index=scan.index+1; self:rebuildFromRecords()
-        if scan.index>#scan.names then self:finishScan() end
-    end)
+    while scan.index<=#scan.names and self:activeDetectorCalls()<MAX_PARALLEL_POSITION_CALLS do
+        local name=scan.names[scan.index]; local record=self.records[name]; scan.index=scan.index+1; scan.inFlight=scan.inFlight+1
+        local activeBefore=self:activeDetectorCalls()
+        self:startDetectorCall("getPlayerPos",{name},function(ok,pos,reason)
+            if self.scan~=scan then return end
+            scan.inFlight=max(0,scan.inFlight-1); scan.completed=scan.completed+1
+            if ok and type(pos)=="table" then
+                record.x,record.y,record.z,record.yaw=pos.x,pos.y,pos.z,pos.yaw
+                record.dimension=dimension(pos.dimension or record.dimension); record.error=nil
+            else record.error=reason or tostring(pos or "Position unavailable") end
+            self:rebuildFromRecords()
+            if scan.completed>=#scan.names and scan.inFlight==0 then self:finishScan() end
+        end)
+        -- Some peripheral implementations return synchronously. Do not start
+        -- three such calls in one UI tick; keep the non-blocking fallback one
+        -- request per tick while still filling all slots for yielding APIs.
+        if self:activeDetectorCalls()==activeBefore then break end
+    end
+    if self.scan~=scan then return end
+    self.status=string.format("Reading positions %d/%d (%d parallel)...",scan.completed,#scan.names,self:activeDetectorCalls()); mark(self.win)
+    if scan.completed>=#scan.names and scan.inFlight==0 then self:finishScan() end
 end
 function Radar:processPendingNames()
-    if self.scan or self.call or not devices.detector then return end
+    if self.scan or self:activeDetectorCalls()>0 or not devices.detector then return end
     local name; for candidate in pairs(self.pendingNames) do name=candidate; break end
     if not name then return end
     self.pendingNames[name]=nil
@@ -190,14 +205,23 @@ function Radar:processPendingNames()
     end)
 end
 function Radar:onSystemEvent(name,a,b,c,d)
-    local normalized=tostring(name or "")
-    if self.call then
-        if normalized=="timer" and a==self.call.timeout then
-            self:cancelDetectorCall(); self:detectorError("Player Detector timed out. Scan cancelled."); return
+    local normalized=tostring(name or ""); local calls={}; for _,call in pairs(self.calls or {}) do calls[#calls+1]=call end
+    if #calls>0 then
+        if normalized=="timer" then
+            for _,call in ipairs(calls) do
+                if a==call.timeout then
+                    self:finishDetectorCall(call,false,nil,"timed out")
+                    return
+                end
+            end
         end
-        if not self.call.filter or self.call.filter==normalized then
-            if self:resumeDetectorCall(name,a,b,c,d) then return end
+        local consumed=false
+        for _,call in ipairs(calls) do
+            if not call.filter or call.filter==normalized then
+                if self:resumeDetectorCall(call,name,a,b,c,d) then consumed=true end
+            end
         end
+        if consumed then return end
     end
     if normalized=="player_join" or normalized=="playerJoin" or normalized=="player_click" or normalized=="playerClick" then
         local username,dim=eventFields(normalized,a,b,c,d); if username=="" then return end
@@ -220,6 +244,9 @@ function Radar:update()
         mark(self.win)
     end
     if not devices.detector then return end
+    if not self.scan and self:activeDetectorCalls()==0 and not next(self.pendingNames) and self.autoScanEnabled and now()>=(self.nextAutoScan or 0) then
+        self:requestScan()
+    end
     if self.scan then self:stepScan() else self:processPendingNames() end
 end
 function Radar:cycleDimension()
