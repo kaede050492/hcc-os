@@ -71,6 +71,11 @@ return function(E)
         elseif kind=="minimize" then c:line(x+3,y+mid,x+size-4,y+mid,color)
         elseif kind=="menu" then
             c:filledRectangle(x+2,y+3,size-4,2,color); c:filledRectangle(x+2,y+mid-1,size-4,2,color); c:filledRectangle(x+2,y+size-5,size-4,2,color)
+        elseif kind=="windows" then
+            local half=max(2,floor((size-5)/2)); c:filledRectangle(x+2,y+2,half,half,color); c:filledRectangle(x+3+half,y+1,half,half,color)
+            c:filledRectangle(x+2,y+3+half,half,half,color); c:filledRectangle(x+3+half,y+2+half,half,half,color)
+        elseif kind=="search" then
+            c:rectangle(x+2,y+2,size-7,size-7,color); c:line(x+size-5,y+size-5,x+size-2,y+size-2,color)
         elseif kind=="back" then c:line(x+size-3,y+2,x+3,y+mid,color); c:line(x+3,y+mid,x+size-3,y+size-3,color)
         end
     end

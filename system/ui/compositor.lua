@@ -8,7 +8,8 @@ return function(E)
         local active=OS.active==win
         c:filledRectangle(3,3,win.w,win.h,P.desktopBackground)
         c:clear(P.windowBackground)
-        c:filledRectangle(0,0,win.w,TITLE,active and P.panelBackground or P.windowBackground)
+        local titleColor=active and (P.titlebarActive or P.accent) or (P.titlebarInactive or P.panelBackground)
+        c:filledRectangle(0,0,win.w,TITLE,titleColor)
         c:line(0,0,win.w-1,0,active and P.accent or P.border)
         c:line(0,win.h-1,win.w-1,win.h-1,P.border)
         c:line(0,0,0,win.h-1,active and P.accent or P.border)
@@ -16,12 +17,12 @@ return function(E)
         local titleX=7
         if win.w>=118 then drawAppIcon(c,win.app,7,4,15,win.crash and "error" or (active and "selected" or "normal")); titleX=28 end
         local controls=win.w>=154 and 66 or 48
-        c:clipping(titleX,6,max(10,win.w-titleX-controls-4),10):text(0,0,shortText(win.name,28),active and P.textPrimary or P.textSecondary)
+        c:clipping(titleX,7,max(10,win.w-titleX-controls-4),10):text(0,0,shortText(win.name,28),P.textPrimary)
         local controlY=4; local controlW=22
-        c:filledRectangle(win.w-controls,1,controls-1,TITLE-2,active and P.panelBackground or P.windowBackground)
-        if win.w>=154 then drawControlIcon(c,win.w-62,controlY,15,"minimize",P.textSecondary) end
-        drawControlIcon(c,win.w-40,controlY,15,win.restore and "restore" or "maximize",active and P.accent or P.textSecondary)
-        drawControlIcon(c,win.w-18,controlY,15,"close",P.error)
+        c:filledRectangle(win.w-controls,1,controls-1,TITLE-2,titleColor)
+        if win.w>=154 then drawControlIcon(c,win.w-62,controlY,15,"minimize",P.textPrimary) end
+        drawControlIcon(c,win.w-40,controlY,15,win.restore and "restore" or "maximize",P.textPrimary)
+        drawControlIcon(c,win.w-18,controlY,15,"close",P.textPrimary)
         win.buttons={}; local client=c:clipping(1,TITLE,win.w-2,max(1,win.h-TITLE-2))
         if not win.crash then
             local prefix=#list; appCall(win,"draw",client)
@@ -36,12 +37,15 @@ return function(E)
         local list={}; local c=canvas(list,0,0,Driver.w,Driver.h)
         if OS.menu then
             local r=menuBox(); local m=c:clipping(r.x,r.y,r.w,r.h)
-            m:clear(P.windowBackground); m:rectangle(0,0,r.w,r.h,P.accent)
-            m:filledRectangle(1,1,r.w-2,26,P.panelBackground); m:text(10,8,"APPLICATIONS",P.accent)
-            local visible=max(1,floor((r.h-38)/22)); OS.menuTop=clamp(OS.menuIndex-visible+1,1,max(1,#OS.order+1-visible))
+            m:clear(P.menuBackground or P.windowBackground); m:rectangle(0,0,r.w,r.h,P.border)
+            m:filledRectangle(1,1,r.w-2,31,P.menuHeader or P.panelBackground)
+            drawControlIcon(m,10,9,14,"windows",P.accent); m:text(31,10,"HCC OS",P.textPrimary)
+            m:filledRectangle(10,34,r.w-20,20,P.inputBackground or P.panelBackground)
+            drawControlIcon(m,16,38,12,"search",P.textSecondary); m:text(35,40,"Type to search",P.textSecondary)
+            local visible=max(1,floor((r.h-menuListY-6)/menuRowH)); OS.menuTop=clamp(OS.menuIndex-visible+1,1,max(1,#OS.order+1-visible))
             for i=OS.menuTop,min(#OS.order+1,OS.menuTop+visible-1) do
-                local y=31+(i-OS.menuTop)*22; local selected=i==OS.menuIndex
-                if selected then m:filledRectangle(3,y-1,r.w-6,21,P.panelBackground) end
+                local y=menuListY+(i-OS.menuTop)*menuRowH; local selected=i==OS.menuIndex
+                if selected then m:filledRectangle(6,y-1,r.w-12,21,P.menuSelection or P.panelBackground) end
                 if i<=#OS.order then
                     local def=OS.registry[OS.order[i]]; local failed=false; local running=false
                     for _,w in ipairs(OS.windows) do if w.id==OS.order[i] and w.crash then failed=true elseif w.id==OS.order[i] and not w.minimized then running=true end end

@@ -12,7 +12,9 @@ return function(E)
         overlayDirty=true,started=now(),renderCount=0,renderRate=0,syncRate=0,
         frameTimer=nil,drag=nil,appTimers={},mouseButtons={},hover=nil,logs={},logSequence=0,
         nextWindowId=0}
-    local TITLE,TASK,TOP=23,28,24
+    -- Windows 10 uses a clean desktop surface with a single bottom taskbar;
+    -- windows still retain the compact title bar used by the app toolkit.
+    local TITLE,TASK,TOP=24,30,0
     local function screen() return box(0,0,Driver.w,Driver.h) end
     local function workspace() return box(0,TOP,Driver.w,max(1,Driver.h-TASK-TOP)) end
     local mark

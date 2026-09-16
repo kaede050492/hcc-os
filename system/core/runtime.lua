@@ -4,12 +4,23 @@ local defaults={networkRefresh=3,resourceRefresh=2,maxImageDownload=4194304,
  imageCacheLimit=4194304,imageCacheEnabled=true,wallpaperCache=true,
  cursorIdle=6,uiScale=1}
 local palettes={
- black={desktopBackground=0xFF000000,windowBackground=0xFF10151B,panelBackground=0xFF202B36,
- textPrimary=0xFFF0F5FA,textSecondary=0xFFACBDCB,border=0xFF526472,accent=0xFF46CFF0,
- success=0xFF60DA90,warning=0xFFFFC65B,error=0xFFFF6978,grid=0xFF253440},
+ -- Keep the existing "black" theme name for compatibility, but make its
+ -- default shell match the Windows 10 dark desktop: blue wallpaper, dark
+ -- taskbar, light text and a Windows blue accent.
+ black={desktopBackground=0xFF075985,windowBackground=0xFF1F1F1F,panelBackground=0xFF2D2D30,
+ textPrimary=0xFFF3F3F3,textSecondary=0xFFC8C8C8,border=0xFF5A5A5A,accent=0xFF0078D4,
+ success=0xFF6CCB5F,warning=0xFFFFC857,error=0xFFE81123,grid=0xFF0B6EA8,
+ taskbarBackground=0xFF111111,titlebarActive=0xFF0078D4,titlebarInactive=0xFF2D2D30,
+ menuBackground=0xFF202020,menuHeader=0xFF2D2D30,menuSelection=0xFF3A3A3A,
+ desktopSelection=0xFF146EA5,desktopHover=0xFF1A638F,wallpaperMark=0xFF0B4F78,
+ inputBackground=0xFF2B2B2B},
  midnight={desktopBackground=0xFF030914,windowBackground=0xFF0E1C30,panelBackground=0xFF1B304C,
  textPrimary=0xFFF0F5FA,textSecondary=0xFFB0C5DD,border=0xFF52769B,accent=0xFFABA0FF,
- success=0xFF60DA90,warning=0xFFFFC65B,error=0xFFFF6978,grid=0xFF263D59}}
+ success=0xFF60DA90,warning=0xFFFFC65B,error=0xFFFF6978,grid=0xFF263D59,
+ taskbarBackground=0xFF09111D,titlebarActive=0xFF1D4F91,titlebarInactive=0xFF1B304C,
+ menuBackground=0xFF0E1C30,menuHeader=0xFF1B304C,menuSelection=0xFF28476A,
+ desktopSelection=0xFF284F7A,desktopHover=0xFF1C3A5B,wallpaperMark=0xFF071A31,
+ inputBackground=0xFF10243D}}
 local accents={cyan=0xFF46CFF0,blue=0xFF70C8FF,purple=0xFFB9A7FF,green=0xFF60DA90,gold=0xFFFFC65B,red=0xFFFF6978}
 function Runtime.new(context)
  local E=setmetatable({context=context},{__index=_ENV})

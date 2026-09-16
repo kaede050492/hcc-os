@@ -28,10 +28,10 @@ return function(E)
         return false
     end
     local function layout()
-        local area=workspace(); local rail=74; local gridX=rail+14; local gridY=TOP+12
-        local cellW=76; local cellH=60
+        local area=workspace(); local rail=0; local gridX=12; local gridY=12
+        local cellW=78; local cellH=64
         local columns=max(1,floor((Driver.w-gridX-10)/cellW))
-        local rows=max(1,floor((Driver.h-TASK-gridY-10)/cellH))
+        local rows=max(1,floor((Driver.h-TASK-gridY-8)/cellH))
         return {rail=rail,gridX=gridX,gridY=gridY,cellW=cellW,cellH=cellH,
             columns=columns,rows=rows,pageSize=columns*rows,area=area}
     end
@@ -51,22 +51,20 @@ return function(E)
         c:clear(P.desktopBackground)
         local wallpaper=wallpaperCommands()
         if wallpaper then for _,cmd in ipairs(wallpaper) do list[#list+1]=cmd end end
-        c:filledRectangle(0,0,Driver.w,TOP,P.panelBackground); c:line(0,TOP-1,Driver.w-1,TOP-1,P.border)
-        c:text(12,7,"HCC OS",P.accent); c:text(68,8,"CONTROL DESKTOP",P.textSecondary)
-        local status=devices.gpuAvailable and "GPU READY" or "GPU OFFLINE"
-        local statusColor=devices.gpuAvailable and P.success or P.warning
-        local statusWidth=Driver.measure(status)+Driver.measure(timeText(jst()))+30
-        c:text(max(Driver.w-statusWidth,150),8,status,statusColor)
-        c:text(Driver.w-Driver.measure(timeText(jst()))-10,8,timeText(jst()),P.textPrimary)
-
-        c:filledRectangle(8,TOP+10,l.rail-14,Driver.h-TASK-TOP-20,P.panelBackground)
-        c:line(l.rail-6,TOP+10,l.rail-6,Driver.h-TASK-10,P.border)
-        c:text(18,TOP+20,"APPS",P.accent)
-        c:text(18,TOP+34,"F1",P.textSecondary); c:text(18,TOP+46,"MENU",P.textSecondary)
+        -- A restrained Windows-style wallpaper mark gives the default blue
+        -- background some depth without competing with a user wallpaper.
+        if not wallpaper then
+            local mx,my=Driver.w-174,Driver.h-TASK-154
+            local mark=P.wallpaperMark or P.grid
+            c:filledRectangle(mx,my,66,28,mark); c:filledRectangle(mx+34,my,66,28,mark)
+            c:filledRectangle(mx,my+34,66,28,mark); c:filledRectangle(mx+34,my+34,66,28,mark)
+            c:line(mx+31,my,mx+31,my+62,P.desktopBackground)
+            c:line(mx,my+31,mx+96,my+31,P.desktopBackground)
+        end
         local items=iconRects()
         if OS.desktopPageCount>1 then
-            c:text(18,Driver.h-TASK-42,"PAGE",P.textSecondary)
-            c:text(18,Driver.h-TASK-30,string.format("%d/%d",OS.desktopPage,OS.desktopPageCount),P.textPrimary)
+            c:text(12,Driver.h-TASK-42,"PAGE",P.textSecondary)
+            c:text(12,Driver.h-TASK-30,string.format("%d/%d",OS.desktopPage,OS.desktopPageCount),P.textPrimary)
         end
         for _,item in ipairs(items) do
             local def=OS.registry[item.id]; local r=item.r; local selected=OS.active==nil and OS.iconIndex==item.index
@@ -77,8 +75,8 @@ return function(E)
             end
             local state=failed and "error" or (selected and "selected" or (hovered and "hover" or
                 (running and "running" or (iconIsOffline(item.id) and "offline" or "normal"))))
-            if selected then c:filledRectangle(r.x,r.y,r.w,r.h,P.panelBackground); c:rectangle(r.x,r.y,r.w,r.h,P.accent)
-            elseif hovered then c:rectangle(r.x,r.y,r.w,r.h,P.border) end
+            if selected then c:filledRectangle(r.x,r.y,r.w,r.h,P.desktopSelection or P.panelBackground); c:rectangle(r.x,r.y,r.w,r.h,P.accent)
+            elseif hovered then c:filledRectangle(r.x,r.y,r.w,r.h,P.desktopHover or P.border); c:rectangle(r.x,r.y,r.w,r.h,P.accent) end
             local size=min(30,r.w-16); drawAppIcon(c,def,r.x+floor((r.w-size)/2),r.y+5,size,state)
             local labels=desktopLabel(def); local labelColor=(selected or hovered) and P.textPrimary or P.textSecondary
             for row,label in ipairs(labels) do
@@ -87,9 +85,7 @@ return function(E)
             end
             if running and not failed then c:filledRectangle(r.x+r.w-8,r.y+5,3,3,P.success) end
         end
-        if Driver.w>=420 then
-            c:text(Driver.w-185,Driver.h-TASK-18,HCC_VERSION_LABEL.."  /  READY",P.border)
-        end
+        if Driver.w>=420 then c:text(Driver.w-185,Driver.h-TASK-18,HCC_VERSION_LABEL.."  /  READY",P.border) end
         OS.desktop=list; OS.desktopDirty=false
     end
     E.shortText=shortText; E.DESKTOP_LABELS=LABELS; E.desktopLabel=desktopLabel; E.iconIsOffline=iconIsOffline

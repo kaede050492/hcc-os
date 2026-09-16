@@ -127,12 +127,15 @@ return function(E)
         end end
     end
     local function taskClick(x,y)
-        if x<78 then setMenu(not OS.menu); return true end
+        local _,startW,_,searchW=taskRects()
+        if x<startW then setMenu(not OS.menu); return true end
+        if x<startW+searchW then setMenu(true); return true end
         for _,item in ipairs(taskRects()) do if inside(item.r,x,y) then
             if item.win==OS.active and not item.win.minimized then minimize(item.win) else focus(item.win) end
             return true
         end end
-        return x>=Driver.w-164
+        local _,_,statusW=taskRects()
+        return x>=Driver.w-statusW
     end
     local function pointer(kind,x,y,buttonId)
         if not (finite(x) and finite(y)) then return end
@@ -193,7 +196,7 @@ return function(E)
         if OS.menu then
             local r=menuBox()
             if inside(r,x,y) then
-                local index=floor((y-r.y-31)/22)+(OS.menuTop or 1)
+                local index=floor((y-r.y-menuListY)/menuRowH)+(OS.menuTop or 1)
                 if index>=1 and index<=#OS.order+1 then setMenu(false); if index>#OS.order then requestExit() else openApp(OS.order[index]) end end
             else setMenu(false) end
             return
