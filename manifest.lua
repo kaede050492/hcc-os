@@ -9,7 +9,7 @@ return {
     edition = "Tom's Peripherals",
     channel = "stable",
     installedSize = 480000,
-    startupSize = 4580,
+    startupSize = 4582,
     maxFileSize = 65536,
     files = {
         "manifest.lua",
