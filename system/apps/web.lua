@@ -7,18 +7,26 @@ local function nativeDecode(body)
     return nil,"Tom's GPU native PNG backend unavailable"
 end
 local function nativeStage(body,key)
-    if type(E.imageStageNativePng)=="function" then return E.imageStageNativePng(body,key) end
+    if type(E.imageStageNativePng)=="function" then
+        local ok,path,reason=pcall(E.imageStageNativePng,body,key)
+        if ok then return path,reason end
+        return nil,tostring(path)
+    end
     return nil,"Tom's GPU native PNG staging unavailable"
 end
 local function nativeFree(record)
-    if type(E.imageFreeNativePng)=="function" then E.imageFreeNativePng(record) end
+    if type(E.imageFreeNativePng)=="function" then pcall(E.imageFreeNativePng,record) end
 end
 local function nativeDelete(path)
-    if type(E.imageDeleteNativePng)=="function" then return E.imageDeleteNativePng(path) end
+    if type(E.imageDeleteNativePng)=="function" then pcall(E.imageDeleteNativePng,path); return true end
     return false,"Tom's GPU native PNG cleanup unavailable"
 end
 local function persistNativePng(path,key)
-    if type(E.imagePersistNativePng)=="function" then return E.imagePersistNativePng(path,key) end
+    if type(E.imagePersistNativePng)=="function" then
+        local ok,result,reason=pcall(E.imagePersistNativePng,path,key)
+        if ok then return result,reason end
+        return nil,tostring(result)
+    end
     return nil,"PNG wallpaper storage unavailable"
 end
 local function webUnescape(s)
@@ -145,7 +153,7 @@ end
 local function webImageStatusLine(lines,index,status)
     for i,line in ipairs(lines) do if line:match("^%[ Image "..tostring(index)..":") then lines[i]="[ Image "..tostring(index)..": "..status.." ]" end end
 end
-function Web:interval() return self.job and (self.job.stage=="wait" and 1 or 0.05) or 1 end
+function Web:interval() return self.job and (self.job.stage=="wait" and 0.25 or 0.05) or 1 end
 function Web:markV131() if self.win then mark(self.win) end end
 function Web:cancelJobV131(message)
     if self.job and self.job.handle and self.job.handle.close then pcall(self.job.handle.close) end
@@ -191,9 +199,11 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     local kind=self:imageKindV131(url,ctype); if not kind then return false,"unsupported image type" end
     local alias=self:cacheAliasV131(url,targetW,targetH); local exact=self:cacheKeyV131(url,targetW,targetH,ctype,length); local cached=imageCacheLoad(alias)
     if kind=="png" then
-        local native,nativeError=nativeDecode(body)
+        local nativeOk,native,nativeError=pcall(nativeDecode,body)
+        if not nativeOk then native=nil; nativeError=tostring(native) end
         if native and native.width<=targetW-4 and native.height<=targetH-4 then
-            local path,stageError=nativeStage(body,url)
+            local stageOk,path,stageError=pcall(nativeStage,body,url)
+            if not stageOk then stageError=tostring(path or "PNG staging failed"); path=nil end
             if path then self:finishNativeImageV131(item,native,path,url); return true end
             nativeFree(native); nativeError=stageError
         elseif native then
@@ -217,14 +227,31 @@ end
 function Web:startRequestV131(url,kind,targetW,targetH,item)
     if type(http)~="table" or type(http.request)~="function" then return false,"CC:T HTTP request API unavailable" end
     local ok,accepted=pcall(http.request,url,nil,{["User-Agent"]="HCC-Web/1.3.1"},true); if not ok or accepted==false or accepted==nil then return false,"HTTP request failed or denied" end
-    self.job={stage="wait",kind=kind,url=url,item=item,targetW=targetW,targetH=targetH}; self:progressV131("Downloading...",0); return true
+    self.job={stage="wait",kind=kind,url=url,item=item,targetW=targetW,targetH=targetH,startedAt=now()}; self:progressV131("Downloading...",0); return true
 end
 function Web:onHttpSuccessV131(url,handle)
     if not self.job or self.job.url~=url then if handle and handle.close then pcall(handle.close) end; return end
+    if type(handle)~="table" then self:onHttpFailureV131(url,"HTTP response handle is invalid"); return end
     local h=self:headersV131(handle); local length=tonumber(h["content-length"] or "")
     if length and length>cfg.maxImageDownload then if handle.close then pcall(handle.close) end; self.job=nil; self.status="Image too large"; self.lines={"Download refused: Content-Length exceeds configured limit."}; self:markV131(); return end
-    self.job.handle=handle; self.job.stage="download"; self.job.parts={}; self.job.bytes=0; self.job.contentType=h["content-type"] or ""; self.job.length=length; self.job.code=200
+    local job=self.job
+    job.handle=handle; job.parts={}; job.bytes=0; job.contentType=h["content-type"] or ""; job.length=length; job.code=200
     if type(handle.getResponseCode)=="function" then local ok,code=pcall(handle.getResponseCode); if ok and finite(code) then self.job.code=code end end
+    if type(handle.readAll)=="function" then
+        local ok,body=pcall(handle.readAll)
+        if handle.close then pcall(handle.close) end
+        if not ok then self:onHttpFailureV131(url,"HTTP response body could not be read"); return end
+        body=tostring(body or "")
+        if #body>cfg.maxImageDownload then self.job=nil; self.status="Image too large"; self.lines={"Download refused: response exceeds configured limit."}; self:markV131(); return end
+        self.job=nil
+        self:progressV131("Downloaded",1)
+        local processed,processError=pcall(self.bodyReadyV131,self,job,body)
+        if not processed then self.job=nil; self.status="Image processing failed"; self.lines={"Image processing failed:",tostring(processError)}; self:markV131() end
+        return true
+    end
+    if type(handle.read)~="function" then self:onHttpFailureV131(url,"HTTP response has no readable body"); return end
+    job.stage="download"
+    return true
 end
 function Web:onHttpFailureV131(url,reason)
     if not self.job or self.job.url~=url then return end
@@ -233,16 +260,31 @@ end
 function Web:bodyReadyV131(job,body)
     if #body>cfg.maxImageDownload then self.job=nil; self.status="Image too large"; self.lines={"Download refused: response exceeds configured limit."}; self:markV131(); return end
     local kind=self:imageKindV131(job.url,job.contentType)
-    if kind then self:startConversionV131(body,job.url,job.contentType,job.length,job.targetW or min(576,self.win and self.win.w or 576),job.targetH or min(320,self.win and self.win.h or 320),job.item); return end
+    if kind then
+        local ok,err=self:startConversionV131(body,job.url,job.contentType,job.length,job.targetW or min(576,self.win and self.win.w or 576),job.targetH or min(320,self.win and self.win.h or 320),job.item)
+        if not ok then
+            local item=job.item; self.job=nil; self.status="Image conversion unavailable"; self.lines={"Image conversion failed: ",tostring(err or "unsupported image type")}
+            if item then item.status="failed"; webImageStatusLine(self.lines,item.index,"failed") end
+            self:markV131(); if item then self:queueNextImageV131() end
+        end
+        return
+    end
     self.body=body; self.title,self.lines,self.links,self.pageImages=webParseV131(body,job.url); self.lines=webJsonLines(body) or self.lines; self.pageMode="html"; self.imageData=nil; self.imagePath=nil; self.linkSelected=1; self.top=1; self.job=nil; self.status="HTTP "..tostring(job.code or 200).."  "..#body.." bytes"; self:markV131(); self:queueNextImageV131()
 end
 function Web:updateV131()
-    local job=self.job; if not job or job.stage=="wait" then return end
+    local job=self.job; if not job then return end
+    if job.stage=="wait" then
+        if now()-(job.startedAt or now())>30 then self:onHttpFailureV131(job.url,"request timed out") end
+        return
+    end
     if job.stage=="download" then
         local chunk; local ok=pcall(function() chunk=job.handle.read(16384) end)
         if not ok then if job.handle.close then pcall(job.handle.close) end; self.job=nil; self.status="Read failed"; self.lines={"Response body could not be read."}; self:markV131(); return end
         if chunk and #chunk>0 then job.parts[#job.parts+1]=chunk; job.bytes=job.bytes+#chunk; if job.bytes>cfg.maxImageDownload then if job.handle.close then pcall(job.handle.close) end; self.job=nil; self.status="Image too large"; self.lines={"Download refused: response exceeds configured limit."}; self:markV131(); return end; self:progressV131("Downloading...",job.length and job.bytes/job.length or 0); return end
-        if job.handle.close then pcall(job.handle.close) end; self:bodyReadyV131(job,table.concat(job.parts)); return
+        if job.handle.close then pcall(job.handle.close) end
+        local processed,processError=pcall(self.bodyReadyV131,self,job,table.concat(job.parts))
+        if not processed then self.job=nil; self.status="Image processing failed"; self.lines={"Image processing failed:",tostring(processError)}; self:markV131() end
+        return
     end
     if job.stage=="convert" then
         local ok,a,b,c,d,e=coroutine.resume(job.co)
@@ -283,6 +325,18 @@ function Web:cancel() self:cancelJobV131("Cancelled") end
 function Web:clearCacheV131() local ok,err=imageCacheClear(); self.cacheNotice=ok and "Image cache cleared" or tostring(err); notify(self.cacheNotice,ok and P.success or P.error); self:markV131() end
 function Web:openImageV131() if not self.imageData and not self.nativeImage then return end; local w=openApp("image"); if w and self.imagePath then appCall(w,"loadPath",self.imagePath) elseif self.imageData then notify("Save the image as HCCI first",P.warning) end end
 function Web:saveHcciV131()
+    if self.nativeImage and self.imagePath then
+        dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
+            if b~="Save" then return end
+            value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
+            local ok,err=pcall(function()
+                local dir=fs.getDir(value); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+                fs.copy(self.imagePath,value)
+            end)
+            if ok then notify("PNG image saved",P.success) else errorBox(err) end
+        end,"/.hccos/images/web_image.png")
+        return
+    end
     if not self.imageData then return end
     dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,"/.hccos/images/web_image.hcci")
 end
@@ -313,7 +367,7 @@ function Web:drawV131(c)
     if self.pageMode=="image" and (self.imageData or self.nativeImage) then
         local pv=c:clipping(5,82,c.w-10,max(20,c.h-111)); Widget.panel(pv,0,0,pv.w,pv.h,0xFF050505,P.border)
         if self.nativeImage then pv:nativeImage(2,2,self.nativeImage,"center") else drawImage(pv,self.imageData,2,2,pv.w-4,pv.h-4,"fit",1,0,0) end
-        button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,"SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
+        button(self,c,5,c.h-25,78,"OPEN IMAGE",function() self:openImageV131() end); button(self,c,87,c.h-25,70,self.nativeImage and "SAVE PNG" or "SAVE HCCI",function() self:saveHcciV131() end); button(self,c,161,c.h-25,82,"WALLPAPER",function() self:setWallpaperV131() end); c:text(248,c.h-20,self.cacheNotice,P.warning)
     else
         local pw=175; local lw=max(30,c.w-pw-12); local rows=max(1,floor((c.h-111)/12)); self.top=clamp(self.top,1,max(1,#self.lines-rows+1)); local body=c:clipping(5,82,lw,rows*12+2); Widget.panel(body,0,0,body.w,body.h,0xFF050505,P.border)
         for i=0,rows-1 do local line=self.lines[self.top+i]; if not line then break end; body:text(3,3+i*12,line,P.textPrimary) end

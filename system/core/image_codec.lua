@@ -62,7 +62,8 @@ end
 local function imageList()
     if not fs.exists(imageDir) or not fs.isDir(imageDir) then return {} end
     local out={}; for _,name in ipairs(fs.list(imageDir)) do
-        local path=fs.combine(imageDir,name); if not fs.isDir(path) and name:lower():match("%.hcci$") then out[#out+1]=path end
+        local path=fs.combine(imageDir,name); local lower=name:lower()
+        if not fs.isDir(path) and (lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.hcci$")) then out[#out+1]=path end
     end
     table.sort(out); return out
 end

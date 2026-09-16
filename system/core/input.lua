@@ -227,12 +227,27 @@ return function(E)
         end
         desktopClick(x,y)
     end
+    local function dispatchHttp(name,url,payload)
+        local method=name=="http_success" and "onHttpSuccess" or "onHttpFailure"
+        for i=#OS.windows,1,-1 do
+            local win=OS.windows[i]
+            if win and not win.crash and win.app and type(win.app[method])=="function" then
+                appCall(win,method,url,payload)
+            end
+        end
+    end
     local function handleEvent(e)
         local name=e[1]
-        if (name=="http_success" or name=="http_failure") and HCCV15 and type(HCCV15.handleHttp)=="function" then
-            if HCCV15.handleHttp(e[2],e[3]) then return end
-        elseif (name=="http_success" or name=="http_failure") and HCCV14 and type(HCCV14.handleHttp)=="function" then
-            if HCCV14.handleHttp(e[2],e[3]) then return end
+        if name=="http_success" or name=="http_failure" then
+            local handled=false
+            if HCCV15 and type(HCCV15.handleHttp)=="function" then
+                handled=HCCV15.handleHttp(e[2],e[3])==true
+            end
+            if not handled and HCCV14 and HCCV14~=HCCV15 and type(HCCV14.handleHttp)=="function" then
+                handled=HCCV14.handleHttp(e[2],e[3])==true
+            end
+            dispatchHttp(name,e[2],e[3])
+            return
         end
         if name:sub(1,12)=="tm_keyboard_" then
             if not devices.keyboards[e[2]] then return end
