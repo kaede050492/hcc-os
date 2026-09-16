@@ -212,14 +212,20 @@ function Driver.decodePng(body)
     if not Driver.nativePngAvailable() then return nil,"Tom's GPU native PNG API unavailable" end
     local buffer,image
     local ok,result=pcall(function()
-        buffer=gpu.newBuffer()
-        if type(buffer)~="table" or type(buffer.write)~="function" or type(buffer.ref)~="function" then error("Tom's GPU byte buffer API unavailable") end
-        for first=1,#body,512 do
-            local bytes={body:byte(first,min(#body,first+511))}
+        -- Tom's Peripherals 1.3.1 accepts an optional initial size for its
+        -- LuaByteBuffer.  Use it when available so large PNGs do not depend
+        -- on repeated implicit buffer growth.
+        local created,createdValue=pcall(gpu.newBuffer,#body)
+        if created then buffer=createdValue else buffer=gpu.newBuffer() end
+        if not buffer or type(buffer.write)~="function" or type(buffer.ref)~="function" then error("Tom's GPU byte buffer API unavailable") end
+        -- Keep the argument list conservative for CC:T and write the raw PNG
+        -- bytes exactly as documented by Tom's LuaByteBuffer API.
+        for first=1,#body,256 do
+            local bytes={body:byte(first,min(#body,first+255))}
             buffer.write(unpack(bytes))
         end
         image=gpu.decodeImage(buffer.ref())
-        if type(image)~="table" or type(image.ref)~="function" or type(image.getWidth)~="function" or type(image.getHeight)~="function" then error("Tom's GPU returned an invalid image") end
+        if not image or type(image.ref)~="function" or type(image.getWidth)~="function" or type(image.getHeight)~="function" then error("Tom's GPU returned an invalid image") end
         local width,height=image.getWidth(),image.getHeight()
         if not (finite(width) and finite(height) and width>0 and height>0) then error("Tom's GPU image dimensions are invalid") end
         local reference=image.ref()

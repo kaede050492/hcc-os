@@ -620,9 +620,16 @@ end
 function imageCacheSave(key,data)
     if not cfg.imageCacheEnabled then return nil,"image cache disabled" end
     local ok,err=pcall(function()
+        -- Ensure the complete cache path exists even on filesystems where
+        -- makeDir does not implicitly create every parent directory.
+        if not fs.exists("/.hccos") then fs.makeDir("/.hccos") end
         if not fs.exists("/.hccos/cache") then fs.makeDir("/.hccos/cache") end
         if not fs.exists(imageCacheDir) then fs.makeDir(imageCacheDir) end
-        local f,e=fs.open(imageCachePath(key),"w"); if not f then error(e or "cache is not writable") end; local good,reason=pcall(f.write,textutils.serialize(imageToStored(data))); f.close(); if not good then error(reason) end; imageCacheTrim()
+        local serialized=textutils.serialize(imageToStored(data))
+        if type(serialized)~="string" or serialized=="" then error("image cache serialization failed") end
+        local f,e=fs.open(imageCachePath(key),"w"); if not f then error(e or "cache is not writable") end
+        local good,reason=pcall(f.write,serialized); local closed,closeError=pcall(f.close)
+        if not good then error(reason) end; if not closed then error(closeError) end; imageCacheTrim()
     end)
     return ok,err
 end

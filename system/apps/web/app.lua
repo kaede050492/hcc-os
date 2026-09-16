@@ -191,7 +191,17 @@ function Web:finishNativeImageV131(item,native,path,url)
 end
 function Web:finishImageV131(item,data,cacheKey,alias)
     local saved,err=imageCacheSave(alias,data); if saved and cacheKey~=alias then imageCacheSave(cacheKey,data) end
-    local path=saved and imageCachePath(alias) or nil; self.cacheNotice=saved and "" or "Cache unavailable: "..tostring(err)
+    local path=saved and imageCachePath(alias) or nil
+    if not path then
+        -- The image cache is optional.  Keep the downloaded image usable
+        -- when its directory is unavailable by persisting a normal HCCI in
+        -- the user image directory instead.
+        local fallback=fs.combine("/.hccos/images","web_"..tostring(floor(now()*1000))..".hcci")
+        local stored,storeError=imageWrite(fallback,data)
+        if stored then path=fallback; self.cacheNotice="Cache unavailable; stored as HCCI" else self.cacheNotice="Cache unavailable: "..tostring(err or storeError) end
+    else
+        self.cacheNotice=""
+    end
     if item then item.data=data; item.path=path; item.status=saved and "ready" or "ready (uncached)"; webImageStatusLine(self.lines,item.index,item.status); self.job=nil; self:progressV131("Rendering...",1); self:queueNextImageV131()
     else self.job=nil; self:showImageV131(data,path,self.url,false) end
 end
@@ -348,8 +358,17 @@ function Web:setWallpaperV131()
         if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
         return
     end
-    if not self.imageData then return end; local path=self.imagePath; if not path then local alias=self:cacheAliasV131(self.url,576,320); local ok=imageCacheSave(alias,self.imageData); if ok then path=imageCachePath(alias); self.imagePath=path end end
-    if not path then errorBox("Image cache unavailable; save as HCCI first"); return end
+    if not self.imageData then return end
+    local path=self.imagePath
+    if not path then
+        local alias=self:cacheAliasV131(self.url,576,320); local ok=imageCacheSave(alias,self.imageData)
+        if ok then path=imageCachePath(alias) else
+            path=fs.combine("/.hccos/images","web_wallpaper_"..tostring(floor(now()*1000))..".hcci")
+            local stored,storeError=imageWrite(path,self.imageData)
+            if not stored then errorBox("Could not save image as HCCI: "..tostring(storeError)); return end
+        end
+        self.imagePath=path
+    end
     cfg.wallpaperPath=path; cfg.wallpaperMode="fit"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty(); if ok then notify("Wallpaper set from converted HCCI",P.success) else errorBox(err) end
 end
 function Web:downloadV131() Web.download(self) end
