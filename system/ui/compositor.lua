@@ -15,7 +15,7 @@ return function(E)
         c:line(0,0,0,win.h-1,active and P.accent or P.border)
         c:line(win.w-1,0,win.w-1,win.h-1,active and P.accent or P.border)
         local titleX=7
-        if win.w>=118 then drawAppIcon(c,win.app,7,4,15,win.crash and "error" or (active and "selected" or "normal")); titleX=28 end
+        if win.w>=118 then drawAppIcon(c,win.app,7,4,16,win.crash and "error" or (active and "selected" or "normal")); titleX=28 end
         local controls=win.w>=154 and 66 or 48
         c:clipping(titleX,7,max(10,win.w-titleX-controls-4),10):text(0,0,shortText(win.name,28),P.textPrimary)
         local controlY=4; local controlW=22

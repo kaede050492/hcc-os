@@ -28,9 +28,9 @@ return function(E)
             local r,w=item.r,item.win; local active=w==OS.active and not w.minimized
             if active then c:filledRectangle(r.x,r.y,r.w,r.h,P.menuSelection or P.windowBackground) end
             local state=w.crash and "error" or (active and "selected" or (w.minimized and "disabled" or "running"))
-            if r.w>=22 then drawAppIcon(c,w.app,r.x+3,r.y+2,min(18,r.h-2),state) end
+            if r.w>=28 then drawAppIcon(c,w.app,r.x+3,r.y,min(24,r.h),state) end
             if r.w>=62 then
-                local tx=r.x+24; local width=max(8,r.x+r.w-tx-4)
+                local tx=r.x+30; local width=max(8,r.x+r.w-tx-4)
                 c:clipping(tx,r.y+5,width,10):text(0,0,shortText(w.name,math.max(4,floor(width/6))),
                     active and P.textPrimary or P.textSecondary)
             end

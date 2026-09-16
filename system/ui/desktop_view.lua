@@ -77,7 +77,7 @@ return function(E)
                 (running and "running" or (iconIsOffline(item.id) and "offline" or "normal"))))
             if selected then c:filledRectangle(r.x,r.y,r.w,r.h,P.desktopSelection or P.panelBackground); c:rectangle(r.x,r.y,r.w,r.h,P.accent)
             elseif hovered then c:filledRectangle(r.x,r.y,r.w,r.h,P.desktopHover or P.border); c:rectangle(r.x,r.y,r.w,r.h,P.accent) end
-            local size=min(30,r.w-16); drawAppIcon(c,def,r.x+floor((r.w-size)/2),r.y+5,size,state)
+            local size=min(32,r.w-16); drawAppIcon(c,def,r.x+floor((r.w-size)/2),r.y+3,size,state)
             local labels=desktopLabel(def); local labelColor=(selected or hovered) and P.textPrimary or P.textSecondary
             for row,label in ipairs(labels) do
                 local clipped=shortText(label,max(4,floor((r.w-8)/6)))

@@ -28,7 +28,7 @@ local function runDesktop(context,catalog,holder)
  install(E,"ui/canvas.lua",loadSystem)
  install(E,"core/window_manager.lua",loadSystem)
  install(E,"ui/icons.lua",loadSystem)
- E.Widget.drawIcon=E.drawAppIcon
+ E.Widget.drawIcon=E.icons.app
  install(E,"core/currency_data.lua",loadSystem)
  install(E,"core/image_codec.lua",loadSystem)
  E.appContext={window={},canvas=E.canvas,widgets=E.Widget,

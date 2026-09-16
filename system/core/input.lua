@@ -85,6 +85,13 @@ return function(E)
             if not w.minimized and inside(w,x,y) then return w end
         end
     end
+    local function resizeShape(edge)
+        if edge.top and edge.left or edge.bottom and edge.right then return "resize_nwse" end
+        if edge.top and edge.right or edge.bottom and edge.left then return "resize_nesw" end
+        if edge.top or edge.bottom then return "resize_ns" end
+        if edge.left or edge.right then return "resize_ew" end
+        return "arrow"
+    end
     local function updateHover(x,y)
         local old=OS.hover; local oldDesktop=OS.desktopHover; local hovered=hitWindow(x,y); local hit=nil; local shape="arrow"
         if hovered then
@@ -92,7 +99,7 @@ return function(E)
             for _,b in ipairs(hovered.buttons or {}) do if yy>=0 and inside(b,xx,yy) then hit=b; shape="hand"; break end end
             if not hit then
                 local wx,wy=x-hovered.x,y-hovered.y; local edge=resizeEdges(hovered,wx,wy)
-                if edge.left or edge.right or edge.top or edge.bottom then shape="resize"
+                if edge.left or edge.right or edge.top or edge.bottom then shape=resizeShape(edge)
                 elseif wy<TITLE then shape="hand" end
             end
         end
@@ -102,8 +109,12 @@ return function(E)
             for i,item in ipairs(iconRects()) do if inside(item.r,x,y) then desktopIndex=item.index; shape="hand"; break end end
             if y>=Driver.h-TASK then shape="hand" end
         end
+        if OS.modal and OS.modal.input~=nil then
+            local r=OS.modal.rect or dialogBox(); local field=box(r.x+8,r.y+r.h-58,r.w-16,22)
+            if inside(field,x,y) then shape="text" end
+        end
         if old and old.win then mark(old.win) end
-        OS.hover=hovered and {win=hovered,hit=hit} or nil; OS.desktopHover=desktopIndex; OS.pointer.shape=shape
+        OS.hover=hovered and {win=hovered,hit=hit} or nil; OS.desktopHover=desktopIndex; cursor.set(shape)
         if OS.hover and OS.hover.win then mark(OS.hover.win) end
         if oldDesktop~=desktopIndex then OS.desktopDirty=true; invalidate(workspace()) end
     end
@@ -156,7 +167,7 @@ return function(E)
                 if d.top then w.y=y-d.offsetY; w.h=bottom-w.y end
                 if d.bottomEdge then w.h=d.startH+y-d.startY end
             else w.x=x-d.dx; w.y=y-d.dy end
-            fit(w); mark(w); OS.pointer.shape=d.resize and "resize" or "move"; return
+            fit(w); cursor.set(d.resize and resizeShape(d) or "move"); return
         end
         if kind=="up" then
             if OS.drag then snapWindow(OS.drag.win); mark(OS.drag.win); taskDirty(); OS.drag=nil end
