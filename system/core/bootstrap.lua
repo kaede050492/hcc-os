@@ -129,13 +129,13 @@ local function runInternal(arguments)
     end
 
     while true do
-        local ok, result = xpcall(function()
+        local ok, started, result = xpcall(function()
             return Desktop.run(context, context.appRegistry)
         end, function(reason)
             return traceback(reason, 3)
         end)
-        if ok then return result end
-        local failure = errorText(result)
+        if ok and started ~= false then return started end
+        local failure = errorText(ok and result or started)
         pcall(function() logger:error("Desktop start failed: "..failure) end)
         local action = Recovery.new(context):run(failure)
         if action ~= "start" then return action end

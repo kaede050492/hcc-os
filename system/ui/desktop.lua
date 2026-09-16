@@ -65,7 +65,10 @@ function Desktop.run(context,catalog)
   if E.cleanup then pcall(E.cleanup)
   elseif E.shutdownDisplay then pcall(E.shutdownDisplay) end
  end
- if not ok then error(result,0) end
- return result
+ -- Return the failure to bootstrap instead of raising it again. Re-raising a
+ -- traceback here hides the original startup reason behind CraftOS's internal
+ -- exception screen and prevents the normal Recovery UI from opening.
+ if not ok then return false,result end
+ return true,result
 end
 return Desktop
