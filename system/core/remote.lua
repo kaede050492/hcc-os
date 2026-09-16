@@ -2,7 +2,7 @@
 local Remote = {}
 Remote.repository = "https://github.com/kaede050492/hcc-os"
 Remote.rawRoot = "https://raw.githubusercontent.com/kaede050492/hcc-os/main"
-Remote.manifestPath = "hcc_os/manifest.lua"
+Remote.manifestPath = "manifest.lua"
 
 local function safeUrl(url)
     return type(url) == "string" and #url < 512 and url:match("^https://[^%s]+$") and url or nil
@@ -35,7 +35,7 @@ function Remote.fileUrl(relative, config)
     relative = tostring(relative or "")
     local root = Remote.manifestUrl(config):gsub("/"..Remote.manifestPath.."$", "")
     if relative == "manifest.lua" then return root.."/"..Remote.manifestPath end
-    return root.."/hcc_os/system/"..relative
+    return root.."/system/"..relative
 end
 
 function Remote.rootFileUrl(relative, config)
@@ -48,8 +48,9 @@ function Remote.fetch(url)
     url = safeUrl(url)
     if not url then return nil, "invalid HTTPS URL" end
     if type(http) ~= "table" or type(http.get) ~= "function" then return nil, "HTTP API unavailable" end
-    local ok, handle = pcall(http.get, url, { ["User-Agent"] = "HCC-OS/1.4.0" })
-    if not ok or not handle then return nil, tostring(handle or "HTTP request denied") end
+    local ok, handle, requestError = pcall(http.get, url)
+    if not ok then return nil, tostring(handle or "HTTP request failed") end
+    if not handle then return nil, tostring(requestError or "HTTP request denied") end
     local readOk, body = pcall(handle.readAll)
     local code = 200
     if type(handle.getResponseCode) == "function" then

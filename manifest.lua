@@ -1,5 +1,5 @@
 -- HCC OS v1.4.0 release manifest.
--- The GitHub repository and raw root are configured only in remote.lua.
+-- Storage metadata is consumed by the standalone installer and updater.
 
 return {
     product = "HCC OS",
@@ -7,7 +7,9 @@ return {
     build = 1400,
     edition = "Tom's Peripherals",
     channel = "stable",
-    legacy = "hccos_v1.3.3.lua",
+    installedSize = 290000,
+    startupSize = 4047,
+    maxFileSize = 40000,
     files = {
         "manifest.lua",
         "version.lua",
@@ -18,7 +20,6 @@ return {
         "core/updater.lua",
         "core/recovery.lua",
         "core/setup.lua",
-        "core/legacy_bridge.lua",
         "core/bootstrap.lua",
         "core/runtime.lua",
         "core/app_manager.lua",

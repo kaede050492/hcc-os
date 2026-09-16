@@ -62,7 +62,6 @@ end
 function Updater:cleanup()
     self.cancelled = true
     if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
-    if not fs.exists(self.paths.temp) then pcall(fs.makeDir, self.paths.temp) end
     self.state = {phase="idle", current="", completed=0, total=0, message="Cancelled"}
 end
 
@@ -86,7 +85,7 @@ function Updater:beginAsyncCheck()
         return false, "HTTP request API unavailable"
     end
     local url = self.remote.manifestUrl(self.config.data)
-    local ok, accepted = pcall(http.request, url, nil, { ["User-Agent"] = "HCC-OS/1.4.0" }, true)
+    local ok, accepted = pcall(http.request, url)
     if not ok or accepted == false or accepted == nil then return false, "HTTP request failed or denied" end
     self.checkJob = {url=url}
     self.state = {phase="check_wait", current="manifest.lua", completed=0, total=0, message="Checking manifest in background..."}
@@ -127,34 +126,27 @@ function Updater:handleHttpFailure(url, reason)
     return true
 end
 
-function Updater:spaceAvailable(files)
+function Updater:spaceAvailable(files, manifest, repairOnly)
     if type(fs.getFreeSpace) ~= "function" then return true end
     local ok, free = pcall(fs.getFreeSpace, "/")
     if not ok or type(free) ~= "number" then return true end
-    local required = 32768
-    for _, file in ipairs(files) do
-        if file.size then required = required + file.size end
+    local installed = math.max(0, tonumber(manifest and manifest.installedSize) or 0)
+    local required
+    if repairOnly then
+        local maximum = math.max(1, tonumber(manifest and manifest.maxFileSize) or 40000)
+        required = math.min(installed, #files * maximum)
+    else
+        required = installed
     end
-    if fs.exists(self.paths.system) then
-        local function add(path)
-            if fs.isDir(path) then
-                for _, name in ipairs(fs.list(path)) do add(fs.combine(path, name)) end
-            else required = required + (fs.getSize(path) or 0) end
-        end
-        add(self.paths.system)
+    if required <= 0 then
+        for _, file in ipairs(files) do required = required + math.max(0, tonumber(file.size) or 0) end
     end
-    return free > required
+    return free >= required + 16384
 end
 
 function Updater:begin(manifest, repairOnly)
     local files, err = manifestFiles(manifest)
     if not files then return false, err end
-    if not self:spaceAvailable(files) then
-        self.state = {phase="blocked", current="", completed=0, total=#files, message="Not enough free space"}
-        return false, self.state.message
-    end
-    if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
-    fs.makeDir(self.paths.updateTemp)
     if repairOnly then
         local selected = {}
         for _, file in ipairs(files) do
@@ -163,10 +155,17 @@ function Updater:begin(manifest, repairOnly)
         end
         files = selected
     end
+    if not self:spaceAvailable(files, manifest, repairOnly) then
+        self.state = {phase="blocked", current="", completed=0, total=#files, message="Not enough free space"}
+        return false, self.state.message
+    end
+    if fs.exists(self.paths.updateTemp) then pcall(fs.delete, self.paths.updateTemp) end
+    fs.makeDir(self.paths.updateTemp)
     self.manifest = manifest
     self.files = files
     self.repairOnly = repairOnly == true
     self.fileIndex = 0
+    self.downloadedBytes = 0
     self.cancelled = false
     self.state = {phase="downloading", current="", completed=0, total=#files, message=#files == 0 and "Nothing to repair" or "Downloading update"}
     return true
@@ -192,6 +191,14 @@ function Updater:step()
         self.state.phase, self.state.message = "failed", "Download failed: "..tostring(err)
         return false, err
     end
+    if file.size and #body ~= file.size then
+        self:cleanup(); return false, "Downloaded size mismatch: "..file.path
+    end
+    local maximum = math.max(1, tonumber(self.manifest and self.manifest.maxFileSize) or 40000)
+    local installed = math.max(maximum, tonumber(self.manifest and self.manifest.installedSize) or maximum)
+    if #body > maximum or self.downloadedBytes + #body > installed then
+        self:cleanup(); return false, "Downloaded data exceeds manifest storage limits"
+    end
     local target = fs.combine(self.paths.updateTemp, file.path)
     ensureParent(target)
     local f, openError = fs.open(target, "w")
@@ -199,6 +206,7 @@ function Updater:step()
     local ok, writeError = pcall(f.write, body)
     f.close()
     if not ok then self:cleanup(); return false, writeError end
+    self.downloadedBytes = self.downloadedBytes + #body
     self.state.completed = self.fileIndex
     self.state.message = string.format("Downloaded %d/%d", self.state.completed, self.state.total)
     return true
@@ -209,40 +217,73 @@ function Updater:backupCurrent(version)
     local destination = self.paths.backups.."/"..name
     if fs.exists(destination) then destination = destination.."-"..tostring(os.epoch("utc")) end
     fs.makeDir(destination)
-    if fs.exists(self.paths.system) then fs.copy(self.paths.system, destination.."/system") end
+    if fs.exists(self.paths.system) then fs.move(self.paths.system, destination.."/system") end
     local info = fs.open(destination.."/version", "w")
     if info then info.write(tostring(version or "unknown")); info.close() end
     return destination
 end
 
-function Updater:copyTree(source, destination, skip)
-    if not fs.isDir(source) then ensureParent(destination); fs.copy(source, destination); return end
+function Updater:moveTree(source, destination, skip)
+    if not fs.isDir(source) then ensureParent(destination); fs.move(source, destination); return end
     if not fs.exists(destination) then fs.makeDir(destination) end
     for _, name in ipairs(fs.list(source)) do
-        if not (skip and skip[name]) then self:copyTree(fs.combine(source, name), fs.combine(destination, name), skip) end
+        if not (skip and skip[name]) then self:moveTree(fs.combine(source, name), fs.combine(destination, name), nil) end
     end
+    if fs.exists(source) and #fs.list(source) == 0 then fs.delete(source) end
 end
 
 function Updater:apply()
     if self.state.phase ~= "ready" then return false, "update is not ready" end
-    if not self:spaceAvailable(self.files or {}) then self.state.phase="blocked"; self.state.message="Not enough free space"; return false, self.state.message end
+    if self.repairOnly then
+        local placed = {}
+        local rollbackRoot = self.paths.temp.."/repair-rollback"
+        if fs.exists(rollbackRoot) then fs.delete(rollbackRoot) end
+        local ok, err = pcall(function()
+            for _, file in ipairs(self.files or {}) do
+                local source = fs.combine(self.paths.updateTemp, file.path)
+                local target = fs.combine(self.paths.system, file.path)
+                if not fs.exists(source) or fs.isDir(source) then error("Staged repair file is missing: "..file.path) end
+                local backup = fs.combine(rollbackRoot, file.path)
+                local hadOriginal = fs.exists(target)
+                placed[#placed+1] = {path=target, backup=backup, hadOriginal=hadOriginal}
+                if hadOriginal then ensureParent(backup); fs.move(target,backup) end
+                ensureParent(target); fs.move(source, target)
+            end
+            if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
+            if fs.exists(rollbackRoot) then fs.delete(rollbackRoot) end
+        end)
+        if not ok then
+            for index=#placed,1,-1 do
+                local item=placed[index]
+                if fs.exists(item.path) then pcall(fs.delete,item.path) end
+                if item.hadOriginal and fs.exists(item.backup) then ensureParent(item.path); pcall(fs.move,item.backup,item.path) end
+            end
+            if fs.exists(rollbackRoot) then pcall(fs.delete,rollbackRoot) end
+            if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
+            self.state.phase, self.state.message = "failed", "Repair rolled back: "..tostring(err)
+            self.logger:error(self.state.message)
+            return false, err
+        end
+        self.state.phase, self.state.message = "applied", "Repair applied; restart HCC OS"
+        self.logger:info("Repaired "..tostring(#(self.files or {})).." system files")
+        return true
+    end
     local oldVersion = self.localManifest and self.localManifest.version or "previous"
     local backupOk, backup, backupError = pcall(self.backupCurrent, self, oldVersion)
     if not backupOk or not backup then return false, backupError or backup end
     local ok, err = pcall(function()
         local versionPath = fs.combine(self.paths.updateTemp, "version.lua")
-        if not self.repairOnly and not fs.exists(versionPath) then error("Downloaded version information is missing") end
-        if not self.repairOnly and fs.exists(self.paths.system) then fs.delete(self.paths.system) end
-        self:copyTree(self.paths.updateTemp, self.paths.system, self.repairOnly and nil or { ["version.lua"] = true })
-        if not self.repairOnly then
-            if fs.exists(self.paths.versionFile) then fs.delete(self.paths.versionFile) end
-            fs.copy(versionPath, self.paths.versionFile)
-        end
+        if not fs.exists(versionPath) then error("Downloaded version information is missing") end
+        fs.makeDir(self.paths.system)
+        self:moveTree(self.paths.updateTemp, self.paths.system, { ["version.lua"] = true })
+        fs.move(versionPath, self.paths.versionFile)
         if fs.exists(self.paths.updateTemp) then fs.delete(self.paths.updateTemp) end
     end)
     if not ok then
         if fs.exists(self.paths.system) then pcall(fs.delete, self.paths.system) end
-        if fs.exists(backup.."/system") then pcall(fs.copy, backup.."/system", self.paths.system) end
+        if fs.exists(backup.."/system") then pcall(fs.move, backup.."/system", self.paths.system) end
+        if fs.exists(backup) then pcall(fs.delete,backup) end
+        if fs.exists(self.paths.updateTemp) then pcall(fs.delete,self.paths.updateTemp) end
         self.state.phase, self.state.message = "failed", "Update rolled back: "..tostring(err)
         self.logger:error(self.state.message)
         return false, err
@@ -271,14 +312,17 @@ function Updater:rollback(version)
     if not selected or not fs.exists(selected.."/system") then return false, "No rollback backup is available" end
     local temporary = self.paths.temp.."/rollback-current"
     if fs.exists(temporary) then fs.delete(temporary) end
-    if fs.exists(self.paths.system) then fs.move(self.paths.system, temporary) end
-    local ok, err = pcall(fs.copy, selected.."/system", self.paths.system)
+    local movedCurrent, movedBackup = false, false
+    local ok, err = pcall(function()
+        if fs.exists(self.paths.system) then fs.move(self.paths.system, temporary); movedCurrent=true end
+        fs.move(selected.."/system", self.paths.system); movedBackup=true
+        if movedCurrent then fs.move(temporary, selected.."/system"); movedCurrent=false end
+    end)
     if not ok then
-        if fs.exists(self.paths.system) then fs.delete(self.paths.system) end
+        if movedBackup and fs.exists(self.paths.system) then pcall(fs.move,self.paths.system,selected.."/system") end
         if fs.exists(temporary) then fs.move(temporary, self.paths.system) end
         return false, err
     end
-    if fs.exists(temporary) then fs.delete(temporary) end
     self.logger:warn("Rolled back HCC OS using "..selected)
     self.state.phase, self.state.message = "rolledback", "Rollback complete; restart HCC OS"
     return true

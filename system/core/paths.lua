@@ -2,7 +2,6 @@
 
 return {
     version = "1.4.0",
-    root = "/hcc_os",
     system = "/.hccos/system",
     core = "/.hccos/system/core",
     ui = "/.hccos/system/ui",
@@ -20,8 +19,6 @@ return {
     updateTemp = "/.hccos/temp/update",
     currency = "/.hccos/currency",
     currencyBackup = "/.hccos/currency.bak",
-    legacy = "/hccos_v1.3.3.lua",
     startup = "/startup.lua",
-    manifest = "/.hccos/system/manifest.lua",
-    sourceManifest = "/hcc_os/manifest.lua"
+    manifest = "/.hccos/system/manifest.lua"
 }

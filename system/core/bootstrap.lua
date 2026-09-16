@@ -49,7 +49,7 @@ local function runInternal(arguments)
     config:ensureDirectories()
     config:load()
     local hadV133 = config.migrated or (not fs.exists(paths.versionFile) and
-        (fs.exists(paths.legacySettings) or fs.exists(paths.currency) or fs.exists(paths.legacy)))
+        (fs.exists(paths.legacySettings) or fs.exists(paths.currency)))
     if hadV133 then
         config.data.installMode = "UPGRADE_FROM_1_3_3"
         config.data.upgradeFrom = "1.3.3"
@@ -112,7 +112,7 @@ local function runInternal(arguments)
     end
     if config.data.autoUpdateCheck then
         logger:info("Automatic update check scheduled after desktop start")
-        -- The legacy desktop receives no blocking HTTP call here. The Update &
+        -- The modular desktop receives no blocking HTTP call here. The Update &
         -- Recovery app performs the optional check on its first service tick.
     end
 
