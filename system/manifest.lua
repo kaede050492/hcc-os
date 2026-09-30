@@ -5,7 +5,7 @@ return {
     revision = "20260917-00",
     edition = "Tom's Peripherals",
     channel = "stable",
-    installedSize = 650219,
+    installedSize = 650824,
     startupSize = 4582,
     maxFileSize = 65536,
     files = {
