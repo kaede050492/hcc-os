@@ -5,7 +5,12 @@ return function(E)
 local Files={}
 function Files:init() self.path="/"; self.selected=1; self.top=1; self:refresh() end
 function Files:refresh()
-    self.entries=fs.list(self.path)
+    local entries=fs.list(self.path); self.entries={}
+    local storage=self.context and self.context.storage
+    for _,name in ipairs(entries) do
+        local path=fs.combine(self.path,name)
+        if not storage or not storage:isInternalPath(path) then self.entries[#self.entries+1]=name end
+    end
     table.sort(self.entries,function(a,b)
         local ad,bd=fs.isDir(fs.combine(self.path,a)),fs.isDir(fs.combine(self.path,b))
         if ad~=bd then return ad end; return a:lower()<b:lower()
@@ -16,16 +21,23 @@ function Files:open()
     local name=self.entries[self.selected]; if not name then return end
     local path=fs.combine(self.path,name)
     if fs.isDir(path) then self.path=path; self.selected=1; self.top=1; self:refresh()
-    elseif name:lower():match("%.hcci$") then openApp("image",path)
+    elseif name:lower():match("%.hcci$") or name:lower():match("%.png$") or name:lower():match("%.jpe?g$") or name:lower():match("%.qoi$") then openApp("image",path)
     else openApp("notepad",path) end
 end
 function Files:up() self.path=fs.getDir(self.path); if self.path=="" then self.path="/" end; self.selected=1; self.top=1; self:refresh() end
 function Files:delete()
     local name=self.entries[self.selected]; if not name then return end
     local path=fs.combine(self.path,name)
-    if fs.isDir(path) or fs.isReadOnly(path) then errorBox("Only writable files can be deleted here"); return end
+    local storage=self.context and self.context.storage
+    if not storage then errorBox("File service unavailable"); return end
+    local allowed,canonical=storage:canDelete(path)
+    if not allowed then errorBox(canonical or "This file cannot be deleted"); return end
     dialog("Delete file","Permanently delete "..path.."?",{"Yes","No"},function(b)
-        if b=="Yes" then local ok,e=pcall(fs.delete,path); if ok then self:refresh(); notify("Deleted "..name,P.warning) else errorBox(e) end end
+        if b=="Yes" then
+            local deleted,deleteError=storage:deleteFile(canonical)
+            if deleted then self:refresh(); notify("Deleted "..name,P.warning)
+            else errorBox(deleteError or "Could not delete file") end
+        end
     end)
 end
 function Files:onKey(k)

@@ -8,7 +8,7 @@ return {
     revision = "20260917-00",
     edition = "Tom's Peripherals",
     channel = "stable",
-    installedSize = 480000,
+    installedSize = 650219,
     startupSize = 4582,
     maxFileSize = 65536,
     files = {
@@ -17,6 +17,10 @@ return {
         "core/paths.lua",
         "core/logger.lua",
         "core/config.lua",
+        "core/capabilities.lua",
+        "core/performance.lua",
+        "core/file_service.lua",
+        "core/http_service.lua",
         "core/remote.lua",
         "core/updater.lua",
         "core/recovery.lua",
@@ -43,6 +47,7 @@ return {
         "ui/taskbar.lua",
         "ui/start_menu.lua",
         "lib/hcc/geometry.lua",
+        "lib/hcc/color.lua",
         "lib/hcc/tom_gpu.lua",
         "lib/hcc/qoi_d.lua",
         "lib/hcc/luaqoi-LICENSE",
@@ -93,4 +98,3 @@ return {
         "apps/setup/app.lua"
     }
 }
-

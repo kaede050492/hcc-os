@@ -24,18 +24,52 @@ local function runDesktop(context,catalog,holder)
  local Runtime=loadSystem("core/runtime.lua")
  local E=Runtime.new(context); holder.runtime=E
  E.paths=context.paths
- E.HCCV15=context.api; E.HCCV14=context.api; E.Widget=context.ui.widgets; E.palette=E.P; E.modules=modules
+ E.Widget=context.ui.widgets; E.palette=E.P; E.modules=modules
  install(E,"ui/gpu_toms.lua",loadSystem)
  install(E,"ui/canvas.lua",loadSystem)
  install(E,"core/window_manager.lua",loadSystem)
+ context.httpDispatcher=function(event)
+  if type(event)~="table" then return false end
+  return E.dispatchHttpEvent(event)
+ end
+ if context.updater and context.httpService then
+  context.updater.httpAvailable=function(url) return not context.httpService:has(url) end
+  context.updater.requestHttp=function(url,body,headers,binary)
+   return context.httpService:requestSystem(context.api,url,body,headers,binary)
+  end
+  context.updater.cancelHttpRequest=function(url)
+   return context.httpService:cancelSystem(context.api,url)
+  end
+ end
  install(E,"ui/icons.lua",loadSystem)
  E.Widget.drawIcon=E.icons.app
  install(E,"core/currency_data.lua",loadSystem)
  install(E,"core/image_codec.lua",loadSystem)
- E.appContext={window={},canvas=E.canvas,widgets=E.Widget,
-  scheduler={invalidate=function(win) if E.mark then E.mark(win) end end},
-  logger=context.logger,settings=E.cfg,peripherals=E.devices,modules=modules,
-  network=context.updater,filesystem=fs}
+ E.makeAppContext=function(win)
+ return {window=win,canvas=E.canvas,widgets=E.Widget,
+   scheduler={
+    invalidate=function(target) if E.mark then E.mark(target or win) end end,
+    after=function(delay,callback) return E.scheduleOwnedTimer(win,delay,callback) end,
+    cancel=function(token) return E.cancelOwnedTimer(win,token) end},
+   http={
+    request=function(url,body,headers,binary) return E.requestHttp(win,url,body,headers,binary) end,
+    cancel=function(url) return E.cancelHttpRequest(win,url) end},
+   logger=context.logger,settings=E.cfg,configuration=context.config,updater=context.updater,
+   takeAutoUpdatePending=function()
+    local api=context.api
+    if not api or api.autoUpdatePending~=true then return false end
+    api.autoUpdatePending=false
+    return true
+   end,
+   ui={
+    mark=function(target) if E.mark then return E.mark(target or win) end end,
+    button=function(...) return E.button(...) end,
+    requestRecovery=function() if E.requestRecovery then return E.requestRecovery() end end,
+    palette=function() return E.P end
+   },
+   peripherals=E.devices,modules=modules,storage=context.fileService,
+   network=context.updater,filesystem=fs}
+ end
  E.require=function(name)
   if modules then return modules:load(name) end
   error("external modules are unavailable",0)
@@ -62,14 +96,17 @@ function Desktop.run(context,catalog)
  local holder={}
  local ok,result=xpcall(function() return runDesktop(context,catalog,holder) end,traceback)
  local E=holder.runtime
+ local recoveryRequested=E and E.OS and E.OS.recoveryRequested==true
  if E then
   if E.cleanup then pcall(E.cleanup)
   elseif E.shutdownDisplay then pcall(E.shutdownDisplay) end
  end
+ if context.updater then context.updater.httpAvailable=nil end
  -- Return the failure to bootstrap instead of raising it again. Re-raising a
  -- traceback here hides the original startup reason behind CraftOS's internal
  -- exception screen and prevents the normal Recovery UI from opening.
  if not ok then return false,result end
+ if recoveryRequested then return false,"manual recovery request" end
  return true,result
 end
 return Desktop

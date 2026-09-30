@@ -6,15 +6,18 @@ return function(E)
  function Setup:init() self.page=1; self.status="Settings are saved only when Finish is selected."; self.networkStatus="Not checked" end
  function Setup:interval() return 0.5 end
  function Setup:update()
-  if self.networkStarted and HCCV14 and HCCV14.context and HCCV14.context.updater then
-   local state=HCCV14.context.updater:status(); self.networkStatus=state.message or state.phase or self.networkStatus
+  local updater=self.context and self.context.updater
+  if self.networkStarted and updater then
+   local state=updater:status(); self.networkStatus=state.message or state.phase or self.networkStatus
   end
   mark(self.win)
  end
  function Setup:next(delta)
   self.page=clamp(self.page+delta,1,#pages)
-  if pages[self.page]=="Network" and not self.networkStarted and HCCV14 then
-   self.networkStarted=true; local ok,err=HCCV14.beginAutoCheck()
+  local updater=self.context and self.context.updater
+  if pages[self.page]=="Network" and not self.networkStarted and updater then
+   if self.context.takeAutoUpdatePending then self.context.takeAutoUpdatePending() end
+   self.networkStarted=true; local ok,err=updater:beginAsyncCheck()
    self.networkStatus=ok and "Checking GitHub manifest..." or ("Manifest check unavailable: "..tostring(err))
   end
   mark(self.win)
@@ -25,7 +28,8 @@ return function(E)
   elseif page=="Computer Label" then dialog("Computer Label","Name for this computer",{"OK","Cancel"},function(b,v) if b=="OK" then cfg.computerLabel=ascii(v):sub(1,48); mark(self.win) end end,cfg.computerLabel)
   elseif page=="Update Settings" then cfg.autoUpdateCheck=not cfg.autoUpdateCheck; mark(self.win)
   elseif page=="Finish" then
-   local ok,err=context.config:completeFirstBoot()
+   local configuration=self.context and self.context.configuration or context.config
+   local ok,err=configuration:completeFirstBoot()
    if not ok then errorBox(err); return end
    for i,id in ipairs(OS.order) do if id=="setup" then table.remove(OS.order,i); break end end
    OS.registry.setup=nil; notify("Setup complete",P.success); closeWindow(self.win)

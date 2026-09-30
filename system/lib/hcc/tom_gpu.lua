@@ -37,7 +37,8 @@ function TomGpu.find(preferred)
             first=first or item
         end
     end
-    return first, first and nil or "Tom's GPU not found"
+    if first then return first end
+    return nil, "Tom's GPU not found"
 end
 
 return TomGpu

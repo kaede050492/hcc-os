@@ -27,9 +27,9 @@ local function nativeDecode(body)
     if type(E.imageDecodeNativePng)=="function" then return E.imageDecodeNativePng(body) end
     return nil,"Tom's GPU native PNG backend unavailable"
 end
-local function resizePng(data,width,height)
-    if type(E.imageResize)=="function" then return E.imageResize(data,width,height) end
-    return imagePrepare(data,width,height)
+local function resizePng(data,width,height,progress)
+    if type(E.imageResize)=="function" then return E.imageResize(data,width,height,progress) end
+    return imagePrepare(data,width,height,progress)
 end
 local function httpCacheLoad(url)
     if type(E.imageHttpCacheLoad)~="function" then return nil,nil end
@@ -67,12 +67,9 @@ local function persistNativePng(path,key)
 end
 local function writeRawPng(path,body)
     if type(path)~="string" or path=="" or type(body)~="string" or #body==0 then return false,"invalid PNG data" end
-    local ok,err=pcall(function()
-        local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-        local f,e=fs.open(path,"wb"); if not f then error(e or "PNG is not writable") end
-        local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
-    end)
-    return ok,err
+    local service=E.context and E.context.fileService
+    if not service then return false,"File service unavailable" end
+    return service:writeAtomic(path,body,cfg.maxImageDownload)
 end
 local function imagePathFor(filename,required)
     local roots={imageStorage}; local seen={[imageStorage]=true}
@@ -86,20 +83,34 @@ local function imagePathFor(filename,required)
     end
     return fs.combine(imageStorage,filename)
 end
-local function saveRawPngDialog(body,defaultPath)
+local function saveRawPngDialog(body,defaultPath,confirmed,allowFallback,onSaved)
     dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
         if b~="Save" then return end
         value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
+        local service=E.context and E.context.fileService
+        if not service then errorBox("File service unavailable"); return end
+        local allowed,canonical=service:canWrite(value)
+        if not allowed then errorBox(canonical); return end
+        value=canonical
+        if fs.exists(value) and not confirmed then
+            dialog("Overwrite file",value,{"Yes","No"},function(choice)
+                if choice=="Yes" then saveRawPngDialog(body,value,true,allowFallback,onSaved) end
+            end)
+            return
+        end
         local ok,err=writeRawPng(value,body)
-        if ok then notify("PNG image saved",P.success) else
+        if ok then
+            if type(onSaved)=="function" then onSaved(value) end
+            notify("PNG image saved",P.success)
+        else
+            if allowFallback==false then errorBox(err); return end
             imageDiagnostic("WARN","viewer.save_png", "primary path failed: "..tostring(err))
             local filename=value:match("([^/]+)$") or "image.png"; local fallback=imagePathFor(filename,#body)
             if fallback~=value then
                 imageDiagnostic("INFO","viewer.save_png", "trying storage fallback: "..fallback)
-                ok,err=writeRawPng(fallback,body)
-                if ok then notify("PNG image saved to "..fallback,P.success); return end
-                imageDiagnostic("ERROR","viewer.save_png", "fallback path failed: "..tostring(err))
+                saveRawPngDialog(body,fallback,false,false,onSaved); return
             end
+            imageDiagnostic("ERROR","viewer.save_png", "fallback path failed: "..tostring(err))
             errorBox(err)
         end
     end,defaultPath)
@@ -123,7 +134,7 @@ local function responseHeaders(handle)
 end
 local ImageViewer={}
 function ImageViewer:init(path)
-    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.path=nil; self.data=nil; self.rawPngBody=nil; self.importRawPng=nil; self.nativeImage=nil; self.error=nil; self.status="Ready"; self.importJob=nil
+    self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; self.selected=1; self.top=1; self.path=nil; self.data=nil; self.rawPngBody=nil; self.importRawPng=nil; self.nativeImage=nil; self.error=nil; self.status="Ready"; self.importJob=nil
     self.images=imageList()
     if type(path)=="string" and path~="" then self:loadPath(path) elseif self.images[1] then self:loadPath(self.images[1]) end
 end
@@ -179,7 +190,7 @@ function ImageViewer:loadPath(path)
     for i,v in ipairs(self.images or {}) do if v==path then self.selected=i end end
     mark(self.win); return true
 end
-function ImageViewer:refreshList() self.images=imageList(); self.selected=clamp(self.selected,1,max(1,#self.images)); if self.images[self.selected] then self:loadPath(self.images[self.selected]) end end
+function ImageViewer:refreshList() self.images=imageList(); self.selected=clamp(self.selected,1,max(1,#self.images)); self.top=clamp(self.top or 1,1,max(1,#self.images)); if self.images[self.selected] then self:loadPath(self.images[self.selected]) end end
 function ImageViewer:openDialog()
     dialog("Open Image","Absolute .hcci, .png, .jpeg or .qoi path",{"Open","Cancel"},function(b,value)
         if b=="Open" then self:loadPath(value) end
@@ -187,18 +198,20 @@ function ImageViewer:openDialog()
 end
 function ImageViewer:saveAs()
     if self.rawPngBody then
-        saveRawPngDialog(self.rawPngBody,self.path and self.path:lower():match("%.png$") and self.path or fs.combine(imageStorage,"image.png"))
+        saveRawPngDialog(self.rawPngBody,self.path and self.path:lower():match("%.png$") and self.path or fs.combine(imageStorage,"image.png"),false,true,function(path)
+            self.path=path; self.status="PNG saved"; self:refreshList()
+        end)
         return
     end
     if self.nativeImage and self.path then
         dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
             if b~="Save" then return end
             value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
-            local ok,err=pcall(function()
-                local dir=fs.getDir(value); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-                fs.copy(self.path,value)
+            local readOk,body=pcall(readFile,self.path,cfg.maxImageDownload)
+            if not readOk then errorBox(body); return end
+            saveRawPngDialog(body,value,false,true,function(path)
+                self.path=path; self.status="PNG saved"; self:refreshList()
             end)
-            if not ok then errorBox(err) else self.path=value; self.status="PNG saved"; self:refreshList(); notify("PNG image saved",P.success) end
         end,self.path)
         return
     end
@@ -206,13 +219,31 @@ function ImageViewer:saveAs()
     dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value)
         if b~="Save" then return end
         value=tostring(value or ""); if not value:lower():match("%.hcci$") then value=value..".hcci" end
-        local ok,err=imageWrite(value,self.data); if not ok then errorBox(err) else self.path=value; self.status="HCCI saved"; self:refreshList(); notify("Image saved",P.success) end
+        local service=E.context and E.context.fileService
+        if not service then errorBox("File service unavailable"); return end
+        local allowed,canonical=service:canWrite(value)
+        if not allowed then errorBox(canonical); return end
+        value=canonical
+        local function save(confirmed)
+            if fs.exists(value) and not confirmed then
+                dialog("Overwrite file",value,{"Yes","No"},function(choice) if choice=="Yes" then save(true) end end)
+                return
+            end
+            local ok,err=imageWrite(value,self.data)
+            if not ok then errorBox(err)
+            else self.path=value; self.status="HCCI saved"; self:refreshList(); notify("Image saved",P.success) end
+        end
+        save(false)
     end,self.path or fs.combine(imageStorage,"image.hcci"))
 end
 function ImageViewer:interval()
     return self.importJob and (self.importJob.stage=="wait" and 0.25 or 0.05) or 1
 end
 function ImageViewer:cancelImport(message)
+    local requestService=self.context and self.context.http
+    if self.importJob and self.importJob.stage=="wait" and self.importJob.url and requestService and type(requestService.cancel)=="function" then
+        pcall(requestService.cancel,self.importJob.url)
+    end
     if self.importJob and self.importJob.handle and self.importJob.handle.close then pcall(self.importJob.handle.close) end
     self.importJob=nil
     if message then self.status=message; mark(self.win) end
@@ -237,6 +268,24 @@ function ImageViewer:finishImportData(data)
     self.data=data; self.path=path; self.nativeImage=nil; self.error=nil; self.status="Image imported and saved"; self.images=imageList()
     for i,value in ipairs(self.images) do if value==path then self.selected=i end end
     mark(self.win); notify("Image imported and saved",P.success)
+end
+function ImageViewer:onNativeImageFailure(record,reason)
+    if record~=self.nativeImage then return false end
+    self:releaseNative()
+    local body=self.rawPngBody
+    if type(body)~="string" or #body==0 or #body>cfg.maxImageDownload then
+        self.error="Native PNG drawing failed and the original PNG is unavailable"
+        self.status="Image fallback unavailable"; imageDiagnostic("ERROR","viewer.native_fallback",tostring(reason or "native draw failed")); mark(self.win); return false
+    end
+    local availableW=max(1,(self.win and self.win.w or 530)-165); local availableH=max(1,(self.win and self.win.h or 282)-80)
+    local co=coroutine.create(function()
+        local decoded=pngDecode(body,function(p) coroutine.yield("Decoding PNG fallback...",p) end,availableW,availableH)
+        return resizePng(decoded,availableW,availableH,function(p) coroutine.yield("Resizing PNG fallback...",p) end)
+    end)
+    self.importJob={stage="native_fallback",co=co}
+    self.status="Converting PNG fallback... 0%"; self.error=nil
+    imageDiagnostic("WARN","viewer.native_fallback",tostring(reason or "native draw failed").."; using cooperative PNG decoder")
+    mark(self.win); return true
 end
 function ImageViewer:startImportBody(job,body)
     body=tostring(body or "")
@@ -327,6 +376,20 @@ function ImageViewer:update()
         if not processed then imageDiagnostic("ERROR","viewer.process",traceError(processError)); self:importError("Image processing failed: "..tostring(processError)) end
         return
     end
+    if job.stage=="native_fallback" then
+        local ok,a,b=coroutine.resume(job.co)
+        if not ok then
+            local reason=traceCoroutine(job.co,a); self.importJob=nil; self.error="PNG fallback failed: "..tostring(a); self.status="Image fallback failed"
+            imageDiagnostic("ERROR","viewer.native_fallback",reason); mark(self.win); return
+        end
+        if coroutine.status(job.co)=="dead" then
+            self.importJob=nil; self.data=a; self.nativeImage=nil; self.error=nil; self.status="PNG displayed with software fallback"
+            mark(self.win)
+        else
+            self.status=tostring(a or "Converting PNG fallback...").." "..tostring(floor(clamp(tonumber(b) or 0,0,1)*100+0.5)).."%"; mark(self.win)
+        end
+        return
+    end
     if job.stage=="convert" then
         local ok,a,b=coroutine.resume(job.co)
         if not ok then local reason=traceCoroutine(job.co,a); imageDiagnostic("ERROR","viewer.convert",reason); self:importError("Image conversion failed: "..tostring(a)); return end
@@ -339,12 +402,13 @@ function ImageViewer:importUrl()
         if b~="GET" then return end
         url=tostring(url or ""):gsub("%s+","")
         if not url:match("^https?://[^%s]+$") then errorBox("Only HTTP/HTTPS URLs are allowed"); return end
-        if type(http)~="table" or type(http.request)~="function" then errorBox("CC:T HTTP request API unavailable"); return end
+        local requestService=self.context and self.context.http
+        if not requestService or type(requestService.request)~="function" then errorBox("CC:T HTTP request API unavailable"); return end
         self:cancelImport(); self:releaseNative(); self.rawPngBody=nil; self.importRawPng=nil; self.error=nil; self.importNotice=nil; self.status="Downloading... 0%"
         local cachedBody,cachedMeta=httpCacheLoad(url); local headers={['User-Agent']="HCC-Image-Viewer/1.5.1",Accept="image/png,image/jpeg,image/qoi,image/*;q=0.8"}
         if cachedMeta then if cachedMeta.etag and cachedMeta.etag~="" then headers["If-None-Match"]=cachedMeta.etag end; if cachedMeta.lastModified and cachedMeta.lastModified~="" then headers["If-Modified-Since"]=cachedMeta.lastModified end end
-        local ok,accepted=pcall(http.request,url,nil,headers,true)
-        if not ok or accepted==false or accepted==nil then self:importError("HTTP image request failed or was denied"); return end
+        local accepted,requestError=requestService.request(url,nil,headers,true)
+        if not accepted then self:importError("HTTP image request failed or was denied: "..tostring(requestError or "request denied")); return end
         self.importJob={stage="wait",url=url,startedAt=now(),cachedBody=cachedBody,cachedMeta=cachedMeta}; mark(self.win)
     end,"https://example.com/image.png")
 end
@@ -352,13 +416,13 @@ function ImageViewer:setWallpaper()
     if self.nativeImage and self.path then
         local path,storeError=persistNativePng(self.path,self.path)
         if not path then errorBox(storeError); return end
-        cfg.wallpaperPath=path; cfg.wallpaperMode="center"
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; cfg.wallpaperEnabled=true
         resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
         if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
         return
     end
     if not self.data or not self.path then errorBox("Save the image before using it as wallpaper"); return end
-    cfg.wallpaperPath=self.path; cfg.wallpaperMode=({fit=true,fill=true,center=true,tile=true})[self.mode] and self.mode or "fit"
+    cfg.wallpaperPath=self.path; cfg.wallpaperMode=({fit=true,fill=true,center=true,tile=true})[self.mode] and self.mode or "fit"; cfg.wallpaperEnabled=true
     resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
     if ok then notify("Wallpaper set: "..cfg.wallpaperMode,P.success) else errorBox(err) end
 end
@@ -372,17 +436,86 @@ function ImageViewer:onKey(k)
     mark(self.win)
 end
 function ImageViewer:onMouse(kind,x,y,b)
-    if kind=="scroll" then self:zoomBy(b>0 and 0.25 or -0.25)
-    elseif kind=="click" and y>=34 and y<self.win.h-35 and x<155 then local i=1+floor((y-34)/17); if self.images[i] then self.selected=i; self:loadPath(self.images[i]) end end
+    if kind=="scroll" then
+        local top=self.listTop or 34; local bottom=self.listBottom or (self.win.h-35)
+        if x<(self.listWidth or 155) and y>=top and y<bottom and #self.images>0 then
+            self.selected=clamp(self.selected+b*3,1,#self.images)
+            if self.images[self.selected] then self:loadPath(self.images[self.selected]) end
+        else self:zoomBy(b>0 and 0.25 or -0.25) end
+    elseif kind=="click" then
+        local top=self.listTop or 34; local bottom=self.listBottom or (self.win.h-35)
+        if y>=top and y<bottom and x<(self.listWidth or 155) then
+            local i=(self.top or 1)+floor((y-top)/17)
+            if self.images[i] then self.selected=i; self:loadPath(self.images[i]) end
+        end
+    end
     mark(self.win)
 end
 function ImageViewer:draw(c)
+    if c.w<400 or c.h<140 then
+        self.compactMode=true
+        c:clipping(6,4,c.w-12,10):text(0,0,shortText("IMAGE VIEWER / "..(self.path or "No image selected"),max(1,floor((c.w-12)/8))),P.accent)
+        local narrow=c.w<280
+        if narrow then
+            local gap=3; local width=floor((c.w-19)/4); local x=5
+            local labels=width>=70 and {"OPEN","SAVE","FIT","IMPORT"} or
+                (width>=38 and {"OPN","SAV","FIT","IMP"} or {"O","S","F","I"})
+            local controls={{labels[1],function() self:openDialog() end},{labels[2],function() self:saveAs() end},
+                {labels[3],function() self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; mark(self.win) end},
+                {labels[4],function() self:importUrl() end}}
+            for _,control in ipairs(controls) do button(self,c,x,17,width,control[1],control[2]); x=x+width+gap end
+        else
+            button(self,c,5,17,42,"OPEN",function() self:openDialog() end); button(self,c,51,17,48,"SAVE",function() self:saveAs() end)
+            button(self,c,103,17,41,"FIT",function() self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; mark(self.win) end)
+            button(self,c,c.w-70,17,65,"IMPORT",function() self:importUrl() end)
+        end
+        local left=min(155,max(72,floor(c.w*0.3))); self.listWidth=left
+        self.listTop=36; self.listBottom=c.h-28
+        c:line(left,35,left,self.listBottom,P.border)
+        local rows=max(1,floor((self.listBottom-self.listTop)/17))
+        self.top=clamp(self.top or 1,1,max(1,#self.images-rows+1))
+        if self.selected<self.top then self.top=self.selected elseif self.selected>=self.top+rows then self.top=self.selected-rows+1 end
+        for row=0,min(rows,#self.images)-1 do
+            local i=self.top+row; local y=self.listTop+row*17
+            if i==self.selected then c:filledRectangle(4,y,left-9,16,P.panelBackground) end
+            c:clipping(8,y+3,left-14,10):text(0,0,fs.getName(self.images[i]),P.textPrimary)
+        end
+        local preview=c:clipping(left+5,self.listTop,c.w-left-10,max(1,self.listBottom-self.listTop)); Widget.panel(preview,0,0,preview.w,preview.h,0xFF050505,P.border)
+        if self.nativeImage then preview:nativeImage(2,2,self.nativeImage,"center")
+        elseif self.data then drawImage(preview,self.data,2,2,preview.w-4,preview.h-4,self.mode,self.zoom,self.offsetX,self.offsetY)
+        elseif self.error then preview:paragraph(4,3,"Image error: "..self.error,P.error,preview.w-8,2)
+        else preview:paragraph(4,3,"Open an HCC image, PNG, JPEG or QOI",P.textSecondary,preview.w-8,2) end
+        local y=c.h-27
+        if narrow then
+            local gap=2; local width=floor((c.w-20)/6); local x=5
+            local labels=width>=42 and {"FILL","100%","+","-","CTR","WALL"} or
+                (width>=28 and {"F","1","+","-","C","W"} or {"F","1","+","-","C","W"})
+            local controls={{labels[1],function() self.mode="fill"; self.zoom=1; mark(self.win) end},
+                {labels[2],function() self.mode="100"; self.zoom=1; self.offsetX=0; self.offsetY=0; mark(self.win) end},
+                {"+",function() self:zoomBy(0.25) end},{"-",function() self:zoomBy(-0.25) end},
+                {labels[5],function() self.offsetX=0; self.offsetY=0; mark(self.win) end},
+                {labels[6],function() self:setWallpaper() end}}
+            controls[3][1]=labels[3]; controls[4][1]=labels[4]
+            for _,control in ipairs(controls) do button(self,c,x,y,width,control[1],control[2]); x=x+width+gap end
+        else
+            button(self,c,5,y,38,"FILL",function() self.mode="fill"; self.zoom=1; mark(self.win) end)
+            button(self,c,47,y,43,"100%",function() self.mode="100"; self.zoom=1; self.offsetX=0; self.offsetY=0; mark(self.win) end)
+            button(self,c,94,y,28,"+",function() self:zoomBy(0.25) end)
+            button(self,c,126,y,28,"-",function() self:zoomBy(-0.25) end)
+            button(self,c,158,y,48,"CENTER",function() self.offsetX=0; self.offsetY=0; mark(self.win) end)
+            button(self,c,210,y,70,"WALLPAPER",function() self:setWallpaper() end)
+        end
+        c:clipping(6,c.h-10,c.w-12,9):text(0,0,self.status or "Arrows pan / PgUp PgDn zoom",self.error and P.error or P.textSecondary)
+        return
+    end
+    self.compactMode=false; self.listTop=34; self.listBottom=c.h-28
     c:text(6,5,"IMAGE VIEWER",P.accent); c:text(6,19,self.path or "No .hcci selected",P.textSecondary)
     button(self,c,5,33,42,"OPEN",function() self:openDialog() end); button(self,c,51,33,48,"SAVE",function() self:saveAs() end)
     button(self,c,103,33,41,"FIT",function() self.mode="fit"; self.zoom=1; self.offsetX=0; self.offsetY=0; mark(self.win) end)
     button(self,c,c.w-70,3,65,"IMPORT",function() self:importUrl() end)
     local left=155; c:line(left,31,left,c.h-28,P.border)
-    local rows=max(1,floor((c.h-70)/17)); for i=1,min(rows,#self.images) do local y=34+(i-1)*17; if i==self.selected then c:filledRectangle(4,y,left-9,16,P.panelBackground) end; c:text(8,y+3,fs.getName(self.images[i]):sub(1,20),P.textPrimary) end
+    local rows=max(1,floor((c.h-70)/17)); self.top=clamp(self.top or 1,1,max(1,#self.images-rows+1)); if self.selected<self.top then self.top=self.selected elseif self.selected>=self.top+rows then self.top=self.selected-rows+1 end
+    for row=0,min(rows,#self.images)-1 do local i=self.top+row; local y=34+row*17; if i==self.selected then c:filledRectangle(4,y,left-9,16,P.panelBackground) end; c:text(8,y+3,fs.getName(self.images[i]):sub(1,20),P.textPrimary) end
     local preview=c:clipping(left+5,33,c.w-left-10,c.h-62); Widget.panel(preview,0,0,preview.w,preview.h,0xFF050505,P.border)
     if self.nativeImage then preview:nativeImage(2,2,self.nativeImage,"center")
     elseif self.data then drawImage(preview,self.data,2,2,preview.w-4,preview.h-4,self.mode,self.zoom,self.offsetX,self.offsetY)
@@ -397,6 +530,7 @@ function ImageViewer:draw(c)
     c:text(6,c.h-13,self.status or "F5 refresh  arrows pan  PgUp/PgDn zoom",self.error and P.error or P.textSecondary)
 end
 function ImageViewer:close() self:cancelImport(); self:releaseNative() end
+function ImageViewer:pause() self:cancelImport("Paused") end
 register("image","Image Viewer","IM",530,282,ImageViewer)
 
 end

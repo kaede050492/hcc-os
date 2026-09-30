@@ -1,1 +1,1 @@
-return {id="setup",name="Setup",icon="setup",entry="app.lua",window={width=430,height=220},desktop={visible=false,order=999},bootOnly=true,requirements={}}
+return {id="setup",name="Setup",description="Complete first-boot system setup",icon="setup",entry="app.lua",window={width=430,height=220},desktop={visible=false,order=999},bootOnly=true,requirements={}}

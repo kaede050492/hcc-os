@@ -5,6 +5,9 @@ local _ENV=env
 local storagePaths=E.paths or {}
 local imageStorage=storagePaths.images or "/.hccos/images"
 local downloadStorage=storagePaths.downloads or "/.hccos/downloads"
+local function fileStorage()
+    return E.context and E.context.fileService
+end
 local function imageDiagnostic(level,stage,message)
     if type(E.imageDiagnostic)=="function" then pcall(E.imageDiagnostic,level,stage,message)
     elseif type(logLine)=="function" then pcall(logLine,level,"IMAGE "..tostring(stage).." "..tostring(message)) end
@@ -68,12 +71,9 @@ local function persistNativePng(path,key)
 end
 local function writeRawPng(path,body)
     if type(path)~="string" or path=="" or type(body)~="string" or #body==0 then return false,"invalid PNG data" end
-    local ok,err=pcall(function()
-        local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-        local f,e=fs.open(path,"wb"); if not f then error(e or "PNG is not writable") end
-        local wrote,writeError=pcall(f.write,body); f.close(); if not wrote then error(writeError) end
-    end)
-    return ok,err
+    local service=fileStorage()
+    if not service then return false,"Safe file storage is unavailable" end
+    return service:writeAtomic(path,body,cfg.maxImageDownload)
 end
 local function imagePathFor(filename,required)
     local roots={imageStorage}; local seen={[imageStorage]=true}
@@ -91,22 +91,23 @@ local function saveRawPngDialog(body,defaultPath)
     dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
         if b~="Save" then return end
         value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
-        local ok,err=writeRawPng(value,body)
-        if ok then notify("PNG image saved",P.success) else
-            imageDiagnostic("WARN","web.save_png","primary path failed: "..tostring(err))
-            local filename=value:match("([^/]+)$") or "web_image.png"; local fallback=imagePathFor(filename,#body)
-            if fallback~=value then
-                imageDiagnostic("INFO","web.save_png","trying storage fallback: "..fallback)
-                ok,err=writeRawPng(fallback,body)
-                if ok then notify("PNG image saved to "..fallback,P.success); return end
-                imageDiagnostic("ERROR","web.save_png","fallback path failed: "..tostring(err))
-            end
-            errorBox(err)
+        local service=fileStorage()
+        if not service then errorBox("Safe file storage is unavailable"); return end
+        local allowed,pathError=service:canWrite(value)
+        if not allowed then errorBox(pathError); return end
+        local existsOk,exists=pcall(fs.exists,value)
+        if not existsOk then errorBox(exists); return end
+        local function save()
+            local ok,err=writeRawPng(value,body)
+            if ok then notify("PNG image saved",P.success) else errorBox(err) end
         end
+        if exists then dialog("Overwrite PNG image","Replace "..value.."?",{"Yes","No"},function(answer) if answer=="Yes" then save() end end)
+        else save() end
     end,defaultPath)
 end
 local function webUnescape(s)
-    return tostring(s or ""):gsub("&amp;","&"):gsub("&lt;","<"):gsub("&gt;",">"):gsub("&quot;",'"'):gsub("&#39;","'")
+    local value=tostring(s or ""):gsub("&amp;","&"):gsub("&lt;","<"):gsub("&gt;",">"):gsub("&quot;",'"'):gsub("&#39;", "'")
+    return value
 end
 local function webParse(html,base)
     html=tostring(html or ""):gsub("<script.-</script>",""):gsub("<style.-</style>","")
@@ -164,11 +165,23 @@ function Web:back() if self.historyIndex>1 then self.historyIndex=self.historyIn
 function Web:forward() if self.historyIndex<#self.history then self.historyIndex=self.historyIndex+1; self:load(self.history[self.historyIndex],false) end end
 function Web:reload() if self.url~="" then self:load(self.url,false) end end
 function Web:download()
-    if self.body=="" or self.url=="" then return end
+    if self.pageMode~="html" or self.body=="" or self.url=="" then
+        notify("No downloaded page content to save",P.warning)
+        return
+    end
     local filename=self.url:match("/([^/?#]+)[?#]?[^/]*$") or "download.txt"; filename=filename:gsub("[^%w%._-]","_"):sub(1,64)
     local path=fs.combine(downloadStorage,filename)
-    local save=function() local ok,err=pcall(function() if not fs.exists(downloadStorage) then fs.makeDir(downloadStorage) end; local f,e=fs.open(path,"w"); if not f then error(e) end; f.write(self.body); f.close() end); if ok then notify("Downloaded "..path,P.success) else errorBox(err) end end
-    if fs.exists(path) then dialog("Overwrite download","Replace "..path.."?",{"Yes","No"},function(b) if b=="Yes" then save() end end) else save() end
+    local service=fileStorage()
+    if not service then errorBox("Safe file storage is unavailable"); return end
+    local allowed,pathError=service:canWrite(path)
+    if not allowed then errorBox(pathError); return end
+    local existsOk,exists=pcall(fs.exists,path)
+    if not existsOk then errorBox(exists); return end
+    local save=function()
+        local ok,err=service:writeTextAtomic(path,self.body,cfg.maxImageDownload)
+        if ok then notify("Downloaded "..path,P.success) else errorBox(err) end
+    end
+    if exists then dialog("Overwrite download","Replace "..path.."?",{"Yes","No"},function(b) if b=="Yes" then save() end end) else save() end
 end
 function Web:onKey(k)
     if k==keys.left then self:back() elseif k==keys.right then self:forward() elseif k==keys.f5 then self:reload()
@@ -232,6 +245,13 @@ end
 function Web:interval() return self.job and (self.job.stage=="wait" and 0.25 or 0.05) or (#(self.imageJobs or {})>0 and 0.05 or 1) end
 function Web:markV131() if self.win then mark(self.win) end end
 function Web:cancelJobV131(message)
+    local requestService=self.context and self.context.http
+    if requestService and type(requestService.cancel)=="function" then
+        if self.job and self.job.stage=="wait" and self.job.url then pcall(requestService.cancel,self.job.url) end
+        for _,job in ipairs(self.imageJobs or {}) do
+            if job.stage=="wait" and job.url then pcall(requestService.cancel,job.url) end
+        end
+    end
     if self.job and self.job.handle and self.job.handle.close then pcall(self.job.handle.close) end
     if self.imageJobs then for _,job in ipairs(self.imageJobs) do if job.handle and job.handle.close then pcall(job.handle.close) end end end
     self.job=nil; self.imageJobs={}; if message then self.status=message; self:markV131() end
@@ -269,6 +289,36 @@ function Web:showNativeImageV131(native,path,url)
     if self.nativeImage and self.nativeImage~=native then nativeFree(self.nativeImage) end
     self.pageMode="image"; self.imageData=nil; self.nativeImage=native; self.imagePath=path; self.title=fs.getName(url or self.url):sub(1,48); self.lines={"Direct image view","PNG decoded by Tom's GPU"}; self.status="Native PNG ready"; self:markV131()
 end
+function Web:onNativeImageFailureV131(record,reason)
+    if record==self.nativeImage then
+        local body,url=self.rawPngBody,self.rawPngUrl or self.url
+        nativeFree(record); self.nativeImage=nil
+        if type(body)~="string" or #body==0 or #body>cfg.maxImageDownload then
+            self.status="Native image fallback unavailable"; self.lines={"Native PNG drawing failed and the original PNG is unavailable."}; self:markV131(); return false
+        end
+        local targetW=max(64,(self.win and self.win.w or 576)-14); local targetH=max(64,(self.win and self.win.h or 360)-TITLE-115)
+        local ok,err=self:startConversionV131(body,url,"image/png",#body,targetW,targetH,nil,true)
+        if not ok then self.status="PNG fallback failed"; self.lines={tostring(err or reason or "image conversion failed")}; self:markV131(); return false end
+        self.cacheNotice="Native drawing unavailable; using software PNG decoder"
+        return true
+    end
+    for _,item in ipairs(self.pageImages or {}) do
+        if record==item.nativeImage then
+            local body=item.rawPngBody
+            nativeFree(record); item.nativeImage=nil
+            if type(body)~="string" or #body==0 or #body>cfg.maxImageDownload then
+                item.status="fallback unavailable"; webImageStatusLine(self.lines,item.index,item.status); self:markV131(); return false
+            end
+            local targetW=tonumber(item.targetW) or max(64,min(384,(self.win and self.win.w or 548)-190))
+            local targetH=tonumber(item.targetH) or max(64,min(200,(self.win and self.win.h or 286)-110))
+            item.status="software fallback"; webImageStatusLine(self.lines,item.index,item.status)
+            local ok,err=self:startConversionV131(body,item.url,"image/png",#body,targetW,targetH,item,true)
+            if not ok then item.status="fallback failed"; webImageStatusLine(self.lines,item.index,item.status); self.status=tostring(err or reason); self:markV131(); return false end
+            return true
+        end
+    end
+    return false
+end
 function Web:finishNativeImageV131(item,native,path,url)
     self.nativeTempPaths=self.nativeTempPaths or {}; if path then self.nativeTempPaths[path]=true end
     if item then
@@ -304,7 +354,7 @@ function Web:finishImageV131(item,data,cacheKey,alias)
     if item then item.data=data; item.path=path; item.status=saved and "ready" or "ready (uncached)"; webImageStatusLine(self.lines,item.index,item.status); self.job=nil; self:progressV131("Rendering...",1); self:queueNextImageV131()
     else self.job=nil; self:showImageV131(data,path,self.url,false) end
 end
-function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
+function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item,skipNative)
     local kind=self:imageKindV131(url,ctype); if not kind then imageDiagnostic("ERROR","web.convert.kind","unsupported image type: "..tostring(url)); return false,"unsupported image type" end
     if not item then
         self.rawPngBody=kind=="png" and body or nil
@@ -313,7 +363,7 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
         item.rawPngBody=body
     end
     local alias=self:cacheAliasV131(url,targetW,targetH); local exact=self:cacheKeyV131(url,targetW,targetH,ctype,length); local cached=kind~="png" and imageCacheLoad(alias) or nil
-    if kind=="png" then
+    if kind=="png" and not skipNative then
         local nativeOk,native,nativeError=pcall(nativeDecode,body)
         if not nativeOk then native=nil; nativeError=traceError(native); imageDiagnostic("WARN","web.native_png","Tom's GPU call failed; fallback=pure_lua_png: "..nativeError)
         elseif not native then imageDiagnostic("WARN","web.native_png","native decode rejected image; fallback=pure_lua_png: "..tostring(nativeError or "unknown error")) end
@@ -340,12 +390,14 @@ function Web:startConversionV131(body,url,ctype,length,targetW,targetH,item)
     self.job={stage="convert",co=co,item=item,url=url,cacheKey=exact,alias=alias}; imageDiagnostic("INFO","web.convert","fallback decoder started: "..kind.." url="..tostring(url)); self:progressV131(kind=="png" and "Decoding PNG..." or kind=="jpeg" and "Decoding JPEG..." or kind=="qoi" and "Decoding QOI..." or "Decoding HCCI...",0); return true
 end
 function Web:startRequestV131(url,kind,targetW,targetH,item)
-    if type(http)~="table" or type(http.request)~="function" then imageDiagnostic("ERROR","web.http","CC:T HTTP request API unavailable: "..tostring(url)); return false,"CC:T HTTP request API unavailable" end
+    local requestService=self.context and self.context.http
+    if not requestService or type(requestService.request)~="function" then imageDiagnostic("ERROR","web.http","CC:T HTTP request API unavailable: "..tostring(url)); return false,"CC:T HTTP request API unavailable" end
     local cachedBody,cachedMeta
     if kind=="image" then cachedBody,cachedMeta=httpCacheLoad(url) end
     local headers=self:cacheHeadersV131(kind=="image" and cachedMeta or nil)
     if kind~="image" then headers.Accept="text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5" end
-    local ok,accepted=pcall(http.request,url,nil,headers,true); if not ok or accepted==false or accepted==nil then imageDiagnostic("ERROR","web.http","HTTP request failed or denied: "..tostring(url)); return false,"HTTP request failed or denied" end
+    local accepted,requestError=requestService.request(url,nil,headers,true)
+    if not accepted then imageDiagnostic("ERROR","web.http","HTTP request failed or denied: "..tostring(url)); return false,tostring(requestError or "HTTP request failed or denied") end
     local job={stage="wait",kind=kind,url=url,item=item,targetW=targetW,targetH=targetH,startedAt=now(),cachedBody=cachedBody,cachedMeta=cachedMeta}
     if kind=="image" and item then self.imageJobs=self.imageJobs or {}; self.imageJobs[#self.imageJobs+1]=job else self.job=job; self:progressV131("Downloading...",0) end
     return true
@@ -369,9 +421,10 @@ function Web:onHttpSuccessV131(url,handle)
     if not job or job.url~=url then job=self:findImageJobV131(url); imageJob=job~=nil end
     if not job then if handle and handle.close then pcall(handle.close) end; imageDiagnostic("WARN","web.http","response has no matching job: "..tostring(url)); return end
     if type(handle)~="table" then imageDiagnostic("ERROR","web.http","response handle is invalid: "..tostring(url)); if imageJob then self:failImageJobV131(job,"HTTP response handle is invalid") else self:onHttpFailureV131(url,"HTTP response handle is invalid") end; return end
+    job.handle=handle
     local h=self:headersV131(handle); local length=tonumber(h["content-length"] or "")
     if length and length>cfg.maxImageDownload then imageDiagnostic("ERROR","web.download","Content-Length exceeds configured limit: "..tostring(url)); if imageJob then self:failImageJobV131(job,"response exceeds configured limit") else if handle.close then pcall(handle.close) end; self.job=nil; self.status="Image too large"; self.lines={"Download refused: Content-Length exceeds configured limit."}; self:markV131() end; return end
-    job.handle=handle; job.parts={}; job.bytes=0; job.contentType=h["content-type"] or (job.cachedMeta and job.cachedMeta.contentType or ""); job.length=length; job.headers=h; job.code=200
+    job.parts={}; job.bytes=0; job.contentType=h["content-type"] or (job.cachedMeta and job.cachedMeta.contentType or ""); job.length=length; job.headers=h; job.code=200
     if type(handle.getResponseCode)=="function" then local ok,code=pcall(handle.getResponseCode); if ok and finite(code) then job.code=code end end
     if job.code==304 and job.cachedBody then
         if handle.close then pcall(handle.close) end
@@ -424,7 +477,8 @@ function Web:updateV131()
         if not ok then imageDiagnostic("ERROR","web.download","response body read failed: "..tostring(job.url)); if job.handle.close then pcall(job.handle.close) end; self.job=nil; self.status="Read failed"; self.lines={"Response body could not be read."}; self:markV131(); return end
         if chunk and #chunk>0 then job.parts[#job.parts+1]=chunk; job.bytes=job.bytes+#chunk; if job.bytes>cfg.maxImageDownload then if job.handle.close then pcall(job.handle.close) end; self.job=nil; self.status="Image too large"; self.lines={"Download refused: response exceeds configured limit."}; self:markV131(); return end; self:progressV131("Downloading...",job.length and job.bytes/job.length or 0); return end
         if job.handle.close then pcall(job.handle.close) end
-        local processed,processError=pcall(self.bodyReadyV131,self,job,table.concat(job.parts))
+        local body=table.concat(job.parts); job.parts=nil
+        local processed,processError=pcall(self.bodyReadyV131,self,job,body)
         if not processed then imageDiagnostic("ERROR","web.process",traceError(processError)); self.job=nil; self.status="Image processing failed"; self.lines={"Image processing failed:",tostring(processError)}; self:markV131() end
         return
     end
@@ -490,7 +544,7 @@ function Web:initV131(url)
 end
 function Web:loadV131(url,record)
     url=webSafeUrl(url); if not url then self.status="Invalid URL"; self.lines={"Only http:// and https:// URLs are allowed."}; self:markV131(); return false end
-    self:cancelJobV131(); if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end; self.nativeTempPaths={}; self.url=url; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.rawPngBody=nil; self.rawPngUrl=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
+    self:cancelJobV131(); if self.nativeImage then nativeFree(self.nativeImage); self.nativeImage=nil end; for _,item in ipairs(self.pageImages or {}) do if item.nativeImage then nativeFree(item.nativeImage) end end; for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end; self.nativeTempPaths={}; self.url=url; self.body=""; self.pageMode="text"; self.pageImages={}; self.imageData=nil; self.imagePath=nil; self.rawPngBody=nil; self.rawPngUrl=nil; self.title="HCC Web"; self.lines={"Downloading..."}; self.linkSelected=1; self.top=1
     if record~=false then for i=#self.history,self.historyIndex+1,-1 do table.remove(self.history,i) end; self.history[#self.history+1]=url; self.historyIndex=#self.history end
     local kind=self:imageKindV131(url,"")
     local requestKind=kind and "image" or "page"; local tw=requestKind=="image" and max(64,(self.win and self.win.w or 576)-14) or nil; local th=requestKind=="image" and max(64,(self.win and self.win.h or 360)-TITLE-115) or nil
@@ -508,30 +562,54 @@ function Web:saveHcciV131()
         dialog("Save PNG Image","Absolute .png path",{"Save","Cancel"},function(b,value)
             if b~="Save" then return end
             value=tostring(value or ""); if not value:lower():match("%.png$") then value=value..".png" end
-            local ok,err=pcall(function()
-                local dir=fs.getDir(value); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-                fs.copy(self.imagePath,value)
-            end)
-            if ok then notify("PNG image saved",P.success) else errorBox(err) end
+            local service=fileStorage()
+            if not service then errorBox("Safe file storage is unavailable"); return end
+            local allowed,pathError=service:canWrite(value)
+            if not allowed then errorBox(pathError); return end
+            local existsOk,exists=pcall(fs.exists,value)
+            if not existsOk then errorBox(exists); return end
+            local source,readError=service:readText(self.imagePath,cfg.maxImageDownload)
+            if not source then errorBox(readError); return end
+            local function save()
+                local ok,err=writeRawPng(value,source)
+                if ok then notify("PNG image saved",P.success) else errorBox(err) end
+            end
+            if exists then dialog("Overwrite PNG image","Replace "..value.."?",{"Yes","No"},function(answer) if answer=="Yes" then save() end end)
+            else save() end
         end,fs.combine(imageStorage,"web_image.png"))
         return
     end
     if not self.imageData then return end
-    dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value) if b=="Save" then value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end; local ok,err=imageWrite(value,self.imageData); if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end end end,fs.combine(imageStorage,"web_image.hcci"))
+    dialog("Save HCC Image","Absolute .hcci path",{"Save","Cancel"},function(b,value)
+        if b~="Save" then return end
+        value=tostring(value or ""); if value:sub(-5):lower()~=".hcci" then value=value..".hcci" end
+        local service=fileStorage()
+        if not service then errorBox("Safe file storage is unavailable"); return end
+        local allowed,pathError=service:canWrite(value)
+        if not allowed then errorBox(pathError); return end
+        local existsOk,exists=pcall(fs.exists,value)
+        if not existsOk then errorBox(exists); return end
+        local function save()
+            local ok,err=imageWrite(value,self.imageData)
+            if ok then self.imagePath=value; notify("Saved "..value,P.success) else errorBox(err) end
+        end
+        if exists then dialog("Overwrite HCC image","Replace "..value.."?",{"Yes","No"},function(answer) if answer=="Yes" then save() end end)
+        else save() end
+    end,fs.combine(imageStorage,"web_image.hcci"))
 end
 function Web:setWallpaperV131()
     if self.rawPngBody then
         local path=imagePathFor("wallpaper_"..tostring(floor(now()*1000))..".png",#self.rawPngBody)
         local stored,storeError=writeRawPng(path,self.rawPngBody)
         if not stored then errorBox("Could not save original PNG: "..tostring(storeError)); return end
-        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; cfg.wallpaperEnabled=true; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
         if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
         return
     end
     if self.nativeImage and self.imagePath then
         local path,storeError=persistNativePng(self.imagePath,self.url)
         if not path then errorBox(storeError); return end
-        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
+        cfg.wallpaperPath=path; cfg.wallpaperMode="center"; cfg.wallpaperEnabled=true; resetWallpaperCache(); local ok,err=saveConfig(); allDirty()
         if ok then notify("PNG wallpaper set (center)",P.success) else errorBox(err) end
         return
     end
@@ -546,7 +624,7 @@ function Web:setWallpaperV131()
         end
         self.imagePath=path
     end
-    cfg.wallpaperPath=path; cfg.wallpaperMode="fit"; resetWallpaperCache(); local ok,err=saveConfig(); allDirty(); if ok then notify("Wallpaper set from converted HCCI",P.success) else errorBox(err) end
+    cfg.wallpaperPath=path; cfg.wallpaperMode="fit"; cfg.wallpaperEnabled=true; resetWallpaperCache(); local ok,err=saveConfig(); allDirty(); if ok then notify("Wallpaper set from converted HCCI",P.success) else errorBox(err) end
 end
 function Web:downloadV131() Web.download(self) end
 function Web:closeV131()
@@ -556,7 +634,55 @@ function Web:closeV131()
     for path in pairs(self.nativeTempPaths or {}) do nativeDelete(path) end
     self.nativeTempPaths={}
 end
+function Web:pause() self:cancelJobV131("Paused") end
 function Web:drawV131(c)
+    if c.w<400 or c.h<180 then
+        c:text(6,3,"HCC WEB  "..self.title:sub(1,30),P.accent)
+        local imageMode=self.pageMode=="image" and (self.imageData or self.nativeImage)
+        local active=self.job~=nil or #(self.imageJobs or {})>0
+        local controls
+        if imageMode then
+            controls={
+                {"BACK",38,function() self:back() end},{"FWD",30,function() self:forward() end},
+                {"RELOAD",48,function() self:reload() end},{"OPEN",34,function() self:openImageV131() end},
+                {"SAVE",34,function() self:saveHcciV131() end},{"WALL",60,function() self:setWallpaperV131() end}
+            }
+        else
+            controls={
+                {"BACK",38,function() self:back() end},{"FWD",30,function() self:forward() end},
+                {"RELOAD",48,function() self:reload() end},{"GO",28,function() self:goDialog() end},
+                {"GET",27,function() self:downloadV131() end},{"CACHE",42,function() self:clearCacheV131() end},
+                {"CANCEL",46,function() self:cancel() end,active}
+            }
+        end
+        local gap=2; local x=8; local narrow=c.w<279
+        local compactWidth=narrow and max(18,floor((c.w-16-gap*(#controls-1))/#controls)) or nil
+        local compactLabels
+        if imageMode then
+            compactLabels=compactWidth and compactWidth>=40 and {"BACK","FWD","RELD","OPEN","SAVE","WALL"} or {"<",">","R","O","S","W"}
+        elseif compactWidth and compactWidth>=32 then compactLabels={"BACK","FWD","REL","GO","GET","CLR","X"}
+        elseif compactWidth and compactWidth>=24 then compactLabels={"B","F","R","GO","DL","C","X"}
+        else compactLabels={"<",">","R","G","D","C","X"} end
+        for index,item in ipairs(controls) do
+            local width=compactWidth or item[2]
+            button(self,c,x,18,width,narrow and compactLabels[index] or item[1],item[3],item[4]); x=x+width+gap
+        end
+        local urlWidth=max(20,c.w-10)
+        c:filledRectangle(5,38,urlWidth,14,P.panelBackground); c:rectangle(5,38,urlWidth,14,P.border)
+        c:clipping(9,40,urlWidth-8,10):text(0,0,self.url=="" and "URL / SEARCH" or self.url,P.textPrimary)
+        c:clipping(6,54,c.w-12,10):text(0,0,self.status,P.textSecondary)
+        c:line(0,66,c.w-1,66,P.border)
+        if imageMode then
+            local preview=c:clipping(5,69,c.w-10,max(1,c.h-72)); Widget.panel(preview,0,0,preview.w,preview.h,0xFF050505,P.border)
+            if self.nativeImage then preview:nativeImage(1,1,self.nativeImage,"center")
+            else drawImage(preview,self.imageData,1,1,preview.w-2,preview.h-2,"fit",1,0,0) end
+        else
+            local rows=max(1,floor((c.h-72)/10)); self.top=clamp(self.top,1,max(1,#self.lines-rows+1))
+            local body=c:clipping(5,69,c.w-10,rows*10+2); Widget.panel(body,0,0,body.w,body.h,0xFF050505,P.border)
+            for i=0,rows-1 do local line=self.lines[self.top+i]; if not line then break end; body:text(3,1+i*10,line,P.textPrimary) end
+        end
+        return
+    end
     c:text(6,5,"HCC WEB",P.accent); c:text(6,19,self.title:sub(1,42),P.textPrimary)
     button(self,c,5,33,42,"BACK",function() self:back() end); button(self,c,51,33,48,"FORWARD",function() self:forward() end); button(self,c,103,33,48,"RELOAD",function() self:reload() end); button(self,c,156,33,39,"GO",function() self:goDialog() end); button(self,c,200,33,72,"DOWNLOAD",function() self:downloadV131() end); button(self,c,277,33,48,"CACHE",function() self:clearCacheV131() end); button(self,c,330,33,58,"CANCEL",function() self:cancel() end)
     local uw=max(20,c.w-10); c:filledRectangle(5,52,uw,15,P.panelBackground); c:rectangle(5,52,uw,15,P.border); c:text(9,55,self.url=="" and "URL / SEARCH" or self.url,P.textPrimary); c:text(6,70,self.status,P.textSecondary); c:line(0,76,c.w-1,76,P.border)
@@ -571,7 +697,7 @@ function Web:drawV131(c)
         button(self,c,c.w-pw-1,c.h-25,47,"NEXT",function() self.imageIndex=self.imageIndex%max(1,#self.pageImages)+1; mark(self.win) end); c:text(6,c.h-14,string.format("%d lines  %d links  %d images  Q cancel",#self.lines,#self.links,#self.pageImages),P.textSecondary)
     end
 end
-Web.init=Web.initV131; Web.load=Web.loadV131; Web.interval=Web.interval; Web.update=Web.updateV131; Web.onHttpSuccess=Web.onHttpSuccessV131; Web.onHttpFailure=Web.onHttpFailureV131; Web.draw=Web.drawV131; Web.close=Web.closeV131
+Web.init=Web.initV131; Web.load=Web.loadV131; Web.interval=Web.interval; Web.update=Web.updateV131; Web.onHttpSuccess=Web.onHttpSuccessV131; Web.onHttpFailure=Web.onHttpFailureV131; Web.onNativeImageFailure=Web.onNativeImageFailureV131; Web.draw=Web.drawV131; Web.close=Web.closeV131
 end
 
 end

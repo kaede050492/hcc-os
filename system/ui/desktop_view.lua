@@ -63,15 +63,14 @@ return function(E)
         c:clear(P.desktopBackground)
         local wallpaper=wallpaperCommands()
         if wallpaper then for _,cmd in ipairs(wallpaper) do list[#list+1]=cmd end end
-        -- A restrained Windows-style wallpaper mark gives the default blue
-        -- background some depth without competing with a user wallpaper.
+        -- A quiet HCC wordmark gives the plain background some depth without
+        -- copying another platform's logo or competing with user wallpaper.
         if not wallpaper then
-            local mx,my=Driver.w-174,Driver.h-TASK-154
-            local mark=P.wallpaperMark or P.grid
-            c:filledRectangle(mx,my,66,28,mark); c:filledRectangle(mx+34,my,66,28,mark)
-            c:filledRectangle(mx,my+34,66,28,mark); c:filledRectangle(mx+34,my+34,66,28,mark)
-            c:line(mx+31,my,mx+31,my+62,P.desktopBackground)
-            c:line(mx,my+31,mx+96,my+31,P.desktopBackground)
+            if Driver.w>=420 then
+                local x,y=Driver.w-62,Driver.h-TASK-37
+                c:text(x,y,"HCC",P.wallpaperMark or P.grid)
+                c:line(x,y+11,Driver.w-12,y+11,P.grid)
+            end
         end
         local items=iconRects()
         if OS.desktopPageCount>1 then

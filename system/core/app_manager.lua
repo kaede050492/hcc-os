@@ -91,9 +91,9 @@ function AppManager.install(E,registry,loadModule,base)
             installFallback(E,entry,module)
         elseif entry.service then
             if type(module)=="table" and type(module.attach)=="function" then
-                ok,err=xpcall(function() return module.attach(E,E.HCCV15 or E.HCCV14) end,traceback)
+                ok,err=xpcall(function() return module.attach(E) end,traceback)
             else
-                ok,err=false,"Service app must return attach(environment, api): "..entry.id
+                ok,err=false,"Service app must return attach(environment): "..entry.id
             end
         elseif type(module)=="function" then
             ok,err=xpcall(function() return module(E) end,traceback)

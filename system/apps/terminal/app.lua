@@ -17,8 +17,9 @@ function Terminal:execute(line)
     elseif cmd=="clear" then self.lines={}; self.scroll=0
     elseif cmd=="echo" then self:write(arg)
     elseif cmd=="open" and OS.registry[arg] then openApp(arg)
-    elseif cmd=="update" and HCCV14 then openApp("updates")
-    elseif cmd=="recovery" then shell.run("/startup.lua","--recovery")
+    elseif cmd=="update" then
+        if self.context and self.context.updater then openApp("updates") else self:write("Update service unavailable") end
+    elseif cmd=="recovery" then requestRecovery()
     elseif cmd=="install" then self:write("Run the standalone installer from CraftOS.")
     elseif cmd=="close" then closeWindow(self.win)
     elseif cmd=="tile" then tileWindows()

@@ -29,6 +29,20 @@ function NetworkManager:onMouse(kind,x,y,b)
 end
 function NetworkManager:draw(c)
     c:text(6,5,"NETWORK MANAGER",P.accent); c:text(6,19,"Logical topology / attach-detach safe",P.textSecondary)
+    if c.w<340 or c.h<150 then
+        c:line(0,31,c.w-1,31,P.border)
+        local rows=max(1,floor((c.h-67)/17))
+        for i=1,min(rows,#self.nodes) do
+            local node=self.nodes[i]; local y=34+(i-1)*17
+            if i==self.selected then c:filledRectangle(4,y,c.w-8,16,P.panelBackground) end
+            c:clipping(8,y+3,c.w-86,10):text(0,0,node.name,P.textPrimary)
+            c:text(c.w-72,y+3,node.remote and "REMOTE" or (node.open and "OPEN" or "CLOSED"),node.open and P.success or P.textSecondary)
+        end
+        local node=self.nodes[self.selected]
+        c:clipping(6,51,c.w-12,10):text(0,0,node and (node.type.." / CH "..self.channel.." / ENTER toggle") or "No modem / connect and rescan",P.textSecondary)
+        button(self,c,5,c.h-23,75,"F5 RESCAN",function() rescan(); self:refresh() end)
+        return
+    end
     local left=floor(c.w*0.57); c:line(left,31,left,c.h-28,P.border)
     for i,node in ipairs(self.nodes) do local y=34+(i-1)*17; if i==self.selected then c:filledRectangle(4,y,left-9,16,P.panelBackground) end; c:text(8,y+3,node.name:sub(1,27),P.textPrimary); c:text(left-70,y+3,node.remote and "REMOTE" or (node.open and "OPEN" or "CLOSED"),node.open and P.success or P.textSecondary) end
     local node=self.nodes[self.selected]; c:text(left+8,36,node and node.name or "No modem",P.textPrimary); c:text(left+8,54,node and node.type or "Attach a modem",P.textSecondary)

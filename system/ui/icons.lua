@@ -118,9 +118,11 @@ return function(E)
         rr(c,x,y,s,10,7,12,5,a); for row=0,2 do for col=0,2 do rr(c,x,y,s,10+col*4,15+row*4,2,2,a) end end
     end
     local function drawSystem(c,x,y,s,a)
-        rr(c,x,y,s,5,5,10,10,a); rr(c,x,y,s,17,5,10,10,a)
-        rr(c,x,y,s,5,17,10,10,a); rr(c,x,y,s,17,17,10,10,a)
-        rl(c,x,y,s,15,5,15,27,a); rl(c,x,y,s,5,15,27,15,a)
+        ro(c,x,y,s,5,5,22,22,a)
+        for row=0,2 do
+            local yy=9+row*7
+            rr(c,x,y,s,9,yy,4,4,a); rl(c,x,y,s,16,yy+2,23,yy+2,a)
+        end
     end
     local function drawDiagnostics(c,x,y,s,a)
         rl(c,x,y,s,16,4,25,8,a); rl(c,x,y,s,25,8,23,23,a); rl(c,x,y,s,23,23,16,28,a)
@@ -158,12 +160,20 @@ return function(E)
         elseif kind=="minimize" then c:line(x+3,y+mid,x+size-4,y+mid,color)
         elseif kind=="menu" then
             c:filledRectangle(x+2,y+3,size-4,2,color); c:filledRectangle(x+2,y+mid-1,size-4,2,color); c:filledRectangle(x+2,y+size-5,size-4,2,color)
-        elseif kind=="windows" then
-            local half=max(2,floor((size-5)/2)); c:filledRectangle(x+2,y+2,half,half,color); c:filledRectangle(x+3+half,y+1,half,half,color)
-            c:filledRectangle(x+2,y+3+half,half,half,color); c:filledRectangle(x+3+half,y+2+half,half,half,color)
         elseif kind=="search" then
             c:rectangle(x+2,y+2,size-7,size-7,color); c:line(x+size-5,y+size-5,x+size-2,y+size-2,color)
         elseif kind=="back" then c:line(x+size-3,y+2,x+3,y+mid,color); c:line(x+3,y+mid,x+size-3,y+size-3,color)
+        elseif kind=="power" then
+            c:line(x+mid,y+2,x+mid,y+mid,color); c:line(x+4,y+5,x+3,y+mid,color); c:line(x+3,y+mid,x+5,y+size-4,color)
+            c:line(x+5,y+size-4,x+size-5,y+size-4,color); c:line(x+size-5,y+size-4,x+size-3,y+mid,color)
+            c:line(x+size-3,y+mid,x+size-4,y+5,color)
+        elseif kind=="restart" then
+            c:line(x+size-3,y+mid,x+size-6,y+4,color); c:line(x+size-6,y+4,x+mid,y+3,color)
+            c:line(x+mid,y+3,x+4,y+mid,color); c:line(x+4,y+mid,x+mid,y+size-3,color)
+            c:line(x+mid,y+size-3,x+size-3,y+mid,color); c:line(x+size-7,y+mid,x+size-3,y+mid,color)
+        elseif kind=="desktop" then
+            c:rectangle(x+2,y+2,size-4,size-7,color); c:line(x+mid,y+size-5,x+mid,y+size-2,color)
+            c:line(x+4,y+size-2,x+size-4,y+size-2,color)
         end
     end
     local function drawAppIcon(c,def,x,y,size,state)

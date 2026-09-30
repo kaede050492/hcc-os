@@ -38,9 +38,13 @@ local function runInternal(arguments)
     local paths = loadSystem("core/paths")
     local Logger = loadSystem("core/logger")
     local Config = loadSystem("core/config")
+    local HttpService = loadSystem("core/http_service")
     local Remote = loadSystem("core/remote")
     local Updater = loadSystem("core/updater")
     local AppRegistry = loadSystem("core/app_registry")
+    local CapabilityRegistry = loadSystem("core/capabilities")
+    local Performance = loadSystem("core/performance")
+    local FileService = loadSystem("core/file_service")
     local Recovery = loadSystem("core/recovery")
     local Widgets = loadSystem("ui/widgets")
     local Icons = loadSystem("ui/icons")
@@ -64,8 +68,9 @@ local function runInternal(arguments)
         config:backupLegacyStartup()
         local saved, err = config:save()
         if not saved then logger:warn("Migrated settings were not saved: "..tostring(err)) end
-    elseif not fs.exists(paths.settings) then
-        config:save()
+    elseif config.recovered or not fs.exists(paths.settings) then
+        local saved, err = config:save()
+        if not saved then logger:warn("Recovered settings were not saved: "..tostring(err)) end
     end
     local interruptedUpdate=false
     for _,root in ipairs(paths.updateTemps or {paths.updateTemp}) do
@@ -77,27 +82,34 @@ local function runInternal(arguments)
     if interruptedUpdate then logger:info("Cleaned interrupted update temporary files") end
 
     local appRegistry = AppRegistry.new({root=paths.apps,logger=logger})
+    local capabilities = CapabilityRegistry.new({api=peripheral,logger=logger})
+    local performance = Performance.new({maxFps=config.data.fpsMax,minFps=config.data.fpsMin,adaptive=config.data.adaptiveFps})
+    local fileService = FileService.new({fs=fs,paths=paths,logger=logger})
+    local httpService = HttpService.new(http)
     local updater = Updater.new(paths, config, logger, Remote)
     updater.appRegistry=appRegistry
     local context = {
         paths=paths, config=config, logger=logger, remote=Remote, modules=moduleLoader,
-        updater=updater, appRegistry=appRegistry, localManifest=updater.localManifest,
+        updater=updater, httpService=httpService, httpRequests=httpService.requests,
+        appRegistry=appRegistry, capabilities=capabilities, performance=performance, fileService=fileService,
+        localManifest=updater.localManifest,
         ui={widgets=Widgets, icons=Icons, taskbar=Taskbar, startMenu=StartMenu}
     }
     context.enterRecovery = function(reason)
         return Recovery.new(context):run(reason or "manual recovery request")
     end
 
-    _G.HCCV15 = {
+    local api
+    api = {
         version="1.5.1", build=1501, context=context,
         autoUpdatePending=config.data.autoUpdateCheck,
         attachApp=function(environment)
-            _G.HCCV15.appMark=environment.mark
+            api.appMark=environment.mark
             local entry=context.appRegistry:entry("updates")
             if not entry then context.appRegistry:scan(); entry=context.appRegistry:entry("updates") end
             if entry then
                 local app=loadModule(entry.entryPath)
-                if type(app) == "table" and type(app.attach) == "function" then app.attach(environment, _G.HCCV15) end
+                if type(app) == "table" and type(app.attach) == "function" then app.attach(environment, api) end
             end
         end,
         check=function() return updater:check() end,
@@ -107,7 +119,7 @@ local function runInternal(arguments)
             local handled
             if type(handleOrReason) == "table" then handled=updater:handleHttpSuccess(url, handleOrReason)
             else handled=updater:handleHttpFailure(url, handleOrReason) end
-            if handled and _G.HCCV15.appMark then _G.HCCV15.appMark(_G.HCCV15.updateWindow) end
+            if handled and api.appMark then api.appMark(api.updateWindow) end
             return handled
         end,
         beginUpdate=function(manifest) return updater:begin(manifest) end,
@@ -119,8 +131,7 @@ local function runInternal(arguments)
         resetSettings=function() return config:reset() end,
         bootLog=function() return logger:read() end
     }
-    context.api = _G.HCCV15
-    _G.HCCV14 = _G.HCCV15
+    context.api = api
 
     if arguments[1] == "--recovery" then
         local action = Recovery.new(context):run("manual recovery request")

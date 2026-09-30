@@ -10,6 +10,7 @@ local storagePaths=E.paths or {}
 local imageDir=storagePaths.images or "/.hccos/images"
 local imageDiagnosticPath=fs.combine(storagePaths.logs or "/.hccos/logs","image-diagnostics.log")
 local imageCache={}
+local reducedImageWarnings=setmetatable({},{__mode="k"})
 local imageToStored
 local function diagnosticTrace(value)
     local message=tostring(value or "unknown image error")
@@ -44,7 +45,7 @@ local function imageColor(value)
         if #h==8 and h:match("^%x+$") then return tonumber(h,16) end
     end
 end
-local function imageNormalize(raw)
+local function imageNormalize(raw,yieldFn)
     if type(raw)~="table" then return nil,"not a table" end
     local w=tonumber(raw.width or raw.w); local h=tonumber(raw.height or raw.h)
     if not w or not h or not finite(w) or not finite(h) or w<1 or h<1 or w>1024 or h>768 or w*h>262144 then return nil,"image dimensions are unsafe" end
@@ -55,9 +56,9 @@ local function imageNormalize(raw)
         for y=1,h do for x=1,w do
             local value=nested and source[y] and source[y][x] or source[(y-1)*w+x]
             pixels[(y-1)*w+x]=imageColor(value) or 0xFF000000
-        end end
+        end; if yieldFn then yieldFn(y/h) end end
     elseif type(raw.rle)=="table" then
-        for _,part in ipairs(raw.rle) do
+        for i,part in ipairs(raw.rle) do
             if type(part)=="table" then
                 local rawIndex=part.index; local color
                 if rawIndex==nil and type(part[1])=="number" and #palette>0 then rawIndex=part[1] end
@@ -66,22 +67,27 @@ local function imageNormalize(raw)
                 local count=floor(tonumber(part.count or part[2] or 0) or 0)
                 for _=1,min(count,w*h-#pixels) do pixels[#pixels+1]=color end
             end
+            if yieldFn and i%128==0 then yieldFn(i/#raw.rle) end
         end
-        while #pixels<w*h do pixels[#pixels+1]=0xFF000000 end
+        while #pixels<w*h do
+            pixels[#pixels+1]=0xFF000000
+            if yieldFn and #pixels%4096==0 then yieldFn(#pixels/(w*h)) end
+        end
     else return nil,"missing pixels or rle" end
     return {version=raw.version==2 and 2 or 1,width=w,height=h,pixels=pixels,palette=#palette>0 and palette or nil,rle=raw.version==2 and raw.rle or nil}
 end
-local function imageRead(path)
+local function imageRead(path,yieldFn)
     if type(path)~="string" or path=="" or fs.isDir(path) then
         imageDiagnostic("ERROR","read", "invalid image path: "..tostring(path))
         return nil,"invalid image path"
     end
-    local ok,raw=pcall(function() return textutils.unserialize(readFile(path,4*1024*1024)) end)
+    local readLimit=finite(cfg.maxImageDownload) and max(1,floor(cfg.maxImageDownload)) or 4*1024*1024
+    local ok,raw=pcall(function() return textutils.unserialize(readFile(path,readLimit)) end)
     if not ok then
         imageDiagnostic("ERROR","read",path.." read/parse failed: "..diagnosticTrace(raw))
         return nil,tostring(raw)
     end
-    local normalized,normalizeError=imageNormalize(raw)
+    local normalized,normalizeError=imageNormalize(raw,yieldFn)
     if not normalized then
         imageDiagnostic("ERROR","normalize",path..": "..tostring(normalizeError))
         return nil,normalizeError
@@ -90,13 +96,12 @@ local function imageRead(path)
 end
 local function imageWrite(path,data)
     if type(path)~="string" or path=="" or not data then return nil,"invalid image path" end
-    local ok,err=pcall(function()
-        local dir=fs.getDir(path); if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-        local f,e=fs.open(path,"w"); if not f then error(e or "image is not writable") end
-        local stored=imageToStored and imageToStored(data) or data
-        local good,reason=pcall(f.write,textutils.serialize(stored)); f.close(); if not good then error(reason) end
-    end)
-    return ok,err
+    local service=E.context and E.context.fileService
+    if not service then return false,"File service unavailable" end
+    local stored=imageToStored and imageToStored(data) or data
+    local serializedOk,serialized=pcall(textutils.serialize,stored)
+    if not serializedOk or type(serialized)~="string" then return false,tostring(serialized) end
+    return service:writeAtomic(path,serialized,cfg.maxImageDownload)
 end
 local function imageList()
     if not fs.exists(imageDir) or not fs.isDir(imageDir) then return {} end
@@ -110,74 +115,276 @@ local function imagePixel(data,x,y)
     if not data or x<1 or y<1 or x>data.width or y>data.height then return 0xFF000000 end
     return data.pixels[(y-1)*data.width+x] or 0xFF000000
 end
-local function drawImage(c,data,x,y,w,h,mode,zoom,offsetX,offsetY)
-    if not data or w<1 or h<1 then return end
-    mode=mode or "fit"; zoom=clamp(tonumber(zoom) or 1,0.1,16); offsetX=offsetX or 0; offsetY=offsetY or 0
-    local iw,ih=data.width,data.height; local sx,sy=zoom,zoom; local ox,oy=x+offsetX,y+offsetY
+local function imageSampleStep()
+    if performance and type(performance.getImageSampleStep)=="function" then
+        local ok,value=pcall(performance.getImageSampleStep,performance)
+        if ok and finite(value) then return clamp(floor(value),1,4) end
+    end
+    return 1
+end
+local function drawImage(c,data,x,y,w,h,mode,zoom,offsetX,offsetY,yieldFn,sampleStepOverride)
+    if type(data)~="table" or not (finite(x) and finite(y) and finite(w) and finite(h)) or w<1 or h<1 then return end
+    mode=type(mode)=="string" and mode or "fit"
+    zoom=tonumber(zoom); if not finite(zoom) then zoom=1 end; zoom=clamp(zoom,0.1,16)
+    offsetX=finite(offsetX) and offsetX or 0; offsetY=finite(offsetY) and offsetY or 0
+    local iw,ih=data.width,data.height
+    if not (finite(iw) and finite(ih) and iw>=1 and ih>=1 and type(data.pixels)=="table") then return end
+    w,h=floor(w),floor(h)
+    if w<1 or h<1 then return end
+    local sx,sy=zoom,zoom; local ox,oy=x+offsetX,y+offsetY
     if mode=="stretch" then sx,sy=w/iw,h/ih; ox,oy=x,y
     elseif mode=="fit" or mode=="fill" then
         local fitScale=min(w/iw,h/ih); local fillScale=max(w/iw,h/ih); sx,sy=(mode=="fit" and fitScale or fillScale),(mode=="fit" and fitScale or fillScale)
         ox=x+(w-iw*sx)/2+offsetX; oy=y+(h-ih*sy)/2+offsetY
     elseif mode=="center" then ox=x+(w-iw*sx)/2+offsetX; oy=y+(h-ih*sy)/2+offsetY end
     if mode=="tile" then sx,sy=zoom,zoom; ox=x+offsetX; oy=y+offsetY end
-    local runs=0; local maxRuns=60000
-    for dy=0,h-1 do
-        local py=y+dy; local srcY=floor((py-oy)/sy)+1
-        if mode=="tile" then srcY=((floor((py-oy)/sy))%ih)+1 end
-        if srcY>=1 and srcY<=ih then
-            local start=nil; local last=nil
-            for dx=0,w-1 do
-                local px=x+dx; local srcX=floor((px-ox)/sx)+1
-                if mode=="tile" then srcX=((floor((px-ox)/sx))%iw)+1 end
-                local color=(srcX>=1 and srcX<=iw) and imagePixel(data,srcX,srcY) or nil
-                if color and color==last then
-                    -- keep extending this horizontal run
-                else
-                    if last and start then c:filledRectangle(start,py,px-start,1,last); runs=runs+1 end
-                    if color then start=px end; last=color
+    local fullResolutionLimit,reducedResolutionLimit=60000,12000
+    local commandList=type(c)=="table" and c.list
+    if type(commandList)~="table" then return end
+    local initialCommandCount=#commandList
+    local function clearImageCommands()
+        for i=#commandList,initialCommandCount+1,-1 do commandList[i]=nil end
+    end
+    local function renderPass(step,runLimit,emit)
+        local runs=0
+        for dy=0,h-1,step do
+            local rowHeight=min(step,h-dy)
+            local py=y+dy
+            local sampleY=py+floor((rowHeight-1)/2)
+            local sourceY=floor((sampleY-oy)/sy)+1
+            if mode=="tile" then sourceY=(floor((sampleY-oy)/sy)%ih)+1 end
+            if sourceY>=1 and sourceY<=ih then
+                local start,last=nil,nil
+                for dx=0,w-1,step do
+                    local cellWidth=min(step,w-dx)
+                    local px=x+dx
+                    local sampleX=px+floor((cellWidth-1)/2)
+                    local sourceX=floor((sampleX-ox)/sx)+1
+                    if mode=="tile" then sourceX=(floor((sampleX-ox)/sx)%iw)+1 end
+                    local color=(sourceX>=1 and sourceX<=iw) and imagePixel(data,sourceX,sourceY) or nil
+                    if color and color==last then
+                        -- Adjacent samples with the same color share one fill.
+                    else
+                        if last and start then
+                            if emit then c:filledRectangle(start,py,px-start,rowHeight,last) end
+                            runs=runs+1
+                            if runs>runLimit then return false end
+                        end
+                        start=color and px or nil
+                        last=color
+                    end
                 end
-                if runs>maxRuns then return end
+                if last and start then
+                    if emit then c:filledRectangle(start,py,x+w-start,rowHeight,last) end
+                    runs=runs+1
+                    if runs>runLimit then return false end
+                end
             end
-            if last and start then c:filledRectangle(start,py,x+w-start,1,last); runs=runs+1 end
+            if yieldFn then yieldFn(min(1,(dy+rowHeight)/h)) end
+        end
+        return true
+    end
+
+    local qualityStep=finite(sampleStepOverride) and clamp(floor(sampleStepOverride),1,4) or imageSampleStep()
+    if qualityStep>1 then
+        if renderPass(qualityStep,reducedResolutionLimit,false) and
+            renderPass(qualityStep,reducedResolutionLimit,true) then
+            reducedImageWarnings[data]=true
+            return
+        end
+        clearImageCommands()
+    else
+        if renderPass(1,fullResolutionLimit,false) then
+            if renderPass(1,fullResolutionLimit,true) then return end
+            clearImageCommands()
         end
     end
-end
-local wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
-local nativeWallpaperLoad
-local imageLoadQoi
-local function clearWallpaperCache()
-    if wallpaperCache.data and wallpaperCache.data.native and type(Driver)=="table" and type(Driver.freeNativeImage)=="function" then Driver.freeNativeImage(wallpaperCache.data) end
-    wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil}
-end
-local function getWallpaper()
-    if cfg.wallpaperMode=="black" or cfg.wallpaperPath=="" then return nil end
-    local key=cfg.wallpaperPath
-    if wallpaperCache.path==key and wallpaperCache.data then return wallpaperCache.data end
-    local data,err
-    local wallpaperPath=cfg.wallpaperPath:lower()
-    if wallpaperPath:match("%.png$") and nativeWallpaperLoad then
-        data,err=nativeWallpaperLoad(cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK)
-    elseif wallpaperPath:match("%.qoi$") and imageLoadQoi then
-        data,err=imageLoadQoi(cfg.wallpaperPath,Driver.w,Driver.h-TASK)
-    else
-        data,err=imageRead(cfg.wallpaperPath)
+    -- Highly detailed images can exceed the memory budget when represented as
+    -- thousands of individual fill commands. Discard the partial pass and
+    -- redraw the complete image at a bounded sampling scale instead.
+    local step=max(2,qualityStep+1,math.ceil(math.sqrt(w*h/reducedResolutionLimit)))
+    while step<=max(w,h) do
+        if renderPass(step,reducedResolutionLimit,false) and renderPass(step,reducedResolutionLimit,true) then
+            if type(data)=="table" and not reducedImageWarnings[data] then
+                reducedImageWarnings[data]=true
+                imageDiagnostic("WARN","render","image resolution reduced to stay within the command budget")
+            end
+            return
+        end
+        clearImageCommands()
+        step=step+1
     end
-    if not data then logLine("WARN","Wallpaper unavailable: "..tostring(err)); cfg.wallpaperMode="black"; clearWallpaperCache(); return nil end
-    wallpaperCache.path=key; wallpaperCache.data=data; wallpaperCache.renderKey=nil; wallpaperCache.commands=nil; return data
+end
+local wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil,error=nil,failedKey=nil,targetW=nil,targetH=nil}
+local wallpaperLoadPng
+local imageLoadQoi
+local wallpaperJob
+local function updateWallpaperTint(color,deferRedraw)
+    if type(E.setWallpaperTint)~="function" then return false end
+    local ok,result=pcall(E.setWallpaperTint,color,deferRedraw)
+    if not ok then
+        imageDiagnostic("WARN","wallpaper.tint",tostring(result))
+        return false
+    end
+    return result
+end
+local function releaseWallpaperData(data)
+    if data and data.native and type(Driver)=="table" and type(Driver.freeNativeImage)=="function" then
+        local released,releaseError=pcall(Driver.freeNativeImage,data)
+        if not released then imageDiagnostic("WARN","wallpaper.release",tostring(releaseError)) end
+    end
+end
+local function clearWallpaperCache()
+    local pending=wallpaperJob
+    wallpaperJob=nil
+    if pending and pending.data~=wallpaperCache.data then releaseWallpaperData(pending.data) end
+    releaseWallpaperData(wallpaperCache.data)
+    wallpaperCache={path=nil,renderKey=nil,data=nil,commands=nil,error=nil,failedKey=nil,targetW=nil,targetH=nil}
+    updateWallpaperTint(nil)
+end
+local function wallpaperKey()
+    return table.concat({cfg.wallpaperPath,cfg.wallpaperMode,tostring(cfg.wallpaperEnabled),Driver.w,Driver.h-TASK},"|")
+end
+local function wallpaperRenderKey(sourceKey,sampleStep)
+    return table.concat({sourceKey,sampleStep or imageSampleStep()},"|")
+end
+local function wallpaperProgress()
+    coroutine.yield()
+end
+local function loadWallpaperData(path,mode,targetW,targetH)
+    local lower=path:lower()
+    if lower:match("%.png$") then
+        return wallpaperLoadPng(path,targetW,targetH,wallpaperProgress)
+    elseif lower:match("%.qoi$") then
+        return imageLoadQoi(path,targetW,targetH,wallpaperProgress)
+    elseif lower:match("%.jpe?g$") then
+        local body=readFile(path,cfg.maxImageDownload)
+        local decoded=jpegDecode(body,wallpaperProgress)
+        return imagePrepare(decoded,targetW,targetH,wallpaperProgress)
+    end
+    local data,err=imageRead(path,wallpaperProgress)
+    if not data then return nil,err end
+    return imagePrepare(data,targetW,targetH,wallpaperProgress)
+end
+local function startWallpaperLoad(key)
+    local targetW,targetH=Driver.w,Driver.h-TASK
+    local cachedData=wallpaperCache.path==cfg.wallpaperPath and wallpaperCache.targetW==targetW and
+        wallpaperCache.targetH==targetH and wallpaperCache.data or nil
+    if wallpaperJob and wallpaperJob.key~=key then
+        if wallpaperJob.data~=cachedData then releaseWallpaperData(wallpaperJob.data) end
+        wallpaperJob=nil
+    end
+    local job={key=key,status="loading",data=cachedData}
+    local path,mode=cfg.wallpaperPath,cfg.wallpaperMode
+    job.thread=coroutine.create(function()
+        local data,err=cachedData,nil
+        if not data then data,err=loadWallpaperData(path,mode,targetW,targetH) end
+        if not data then return nil,err or "image could not be loaded" end
+        local list={}; local c=canvas(list,0,0,targetW,targetH)
+        local sampleStep=imageSampleStep()
+        job.renderKey=wallpaperRenderKey(job.key,sampleStep)
+        if data.native then c:nativeImage(0,0,data,"center")
+        else drawImage(c,data,0,0,targetW,targetH,mode,1,0,0,wallpaperProgress,sampleStep) end
+        return data,list
+    end)
+    wallpaperJob=job
+end
+local function stepWallpaperLoad(budgetSeconds)
+    local job=wallpaperJob
+    if not job or job.status~="loading" then return false end
+    budgetSeconds=finite(budgetSeconds) and clamp(budgetSeconds,0.001,0.03) or 0.006
+    local started=os.clock()
+    repeat
+        local ok,data,commands=coroutine.resume(job.thread)
+        if not ok then
+            job.status="failed"; job.error=tostring(data)
+        elseif coroutine.status(job.thread)=="dead" then
+            if not data then job.status="failed"; job.error=tostring(commands or "image could not be loaded")
+            else job.status="ready"; job.data=data; job.commands=commands end
+        end
+        if job.status~="loading" then break end
+    until os.clock()-started>=budgetSeconds
+
+    if job.status=="loading" then return true end
+    if wallpaperJob~=job or job.key~=wallpaperKey() then
+        if job.data~=wallpaperCache.data then releaseWallpaperData(job.data) end
+        if wallpaperJob==job then wallpaperJob=nil end
+        return false
+    end
+    if job.status=="ready" then
+        wallpaperCache.path=cfg.wallpaperPath; wallpaperCache.renderKey=job.renderKey or wallpaperRenderKey(job.key)
+        wallpaperCache.data=job.data
+        wallpaperCache.targetW=Driver.w; wallpaperCache.targetH=Driver.h-TASK
+        -- The retained-mode compositor needs a stable command list for the
+        -- active wallpaper until its path, mode, or display size changes.
+        wallpaperCache.commands=job.commands
+        wallpaperCache.error=nil; wallpaperCache.failedKey=nil
+        local tint
+        if E.color and type(E.color.sample)=="function" then
+            local sampled,sample=pcall(E.color.sample,job.data,8,6)
+            if sampled then tint=sample
+            else imageDiagnostic("WARN","wallpaper.tint",tostring(sample)) end
+        end
+        updateWallpaperTint(tint,true)
+        cfg.wallpaperLastGood=cfg.wallpaperPath; cfg.wallpaperLastFailed=""; cfg.wallpaperError=""
+    else
+        job.error=tostring(job.error or "image could not be loaded")
+        cfg.wallpaperLastFailed=cfg.wallpaperPath; cfg.wallpaperError=job.error:sub(1,256)
+        wallpaperCache.path=cfg.wallpaperPath; wallpaperCache.renderKey=nil
+        wallpaperCache.data=nil; wallpaperCache.commands=nil; wallpaperCache.error=job.error; wallpaperCache.failedKey=job.key
+        updateWallpaperTint(nil,true)
+        logLine("WARN","Wallpaper unavailable: "..job.error)
+    end
+    wallpaperJob=nil
+    if type(allDirty)=="function" then allDirty() end
+    return false
+end
+local function solidWallpaperCommands(cacheKey)
+    local key=table.concat({cacheKey,tostring(cfg.wallpaperBackground),Driver.w,Driver.h-TASK},"|")
+    if wallpaperCache.commands and wallpaperCache.renderKey==key then return wallpaperCache.commands end
+    local rgb=type(cfg.wallpaperBackground)=="string" and tonumber(cfg.wallpaperBackground:match("^#(%x%x%x%x%x%x)$"),16)
+    local color=rgb and (0xFF000000+rgb) or P.desktopBackground
+    local list={}; local c=canvas(list,0,0,Driver.w,Driver.h-TASK); c:clear(color)
+    wallpaperCache.renderKey=key; wallpaperCache.commands=list
+    return list
 end
 local function wallpaperCommands()
-    local data=getWallpaper(); if not data then return nil end
-    local key=table.concat({cfg.wallpaperPath,cfg.wallpaperMode,Driver.w,Driver.h-TASK},"|")
-    if cfg.wallpaperCache and wallpaperCache.commands and wallpaperCache.renderKey==key then return wallpaperCache.commands end
-    local list={}; local c=canvas(list,0,0,Driver.w,Driver.h-TASK)
-    if data.native then c:nativeImage(0,0,data,"center") else drawImage(c,data,0,0,Driver.w,Driver.h-TASK,cfg.wallpaperMode,1,0,0) end
-    if cfg.wallpaperCache then wallpaperCache.renderKey=key; wallpaperCache.commands=list end
-    return list
+    if cfg.wallpaperEnabled==false or cfg.wallpaperMode=="black" then
+        if wallpaperCache.data or wallpaperCache.commands or wallpaperJob then clearWallpaperCache() end
+        return nil
+    end
+    if cfg.wallpaperMode=="solid" then
+        if wallpaperCache.data or wallpaperJob then clearWallpaperCache() end
+        return solidWallpaperCommands("solid")
+    end
+    if cfg.wallpaperPath=="" then
+        if wallpaperCache.data or wallpaperJob then clearWallpaperCache() end
+        return nil
+    end
+    local sourceKey=wallpaperKey()
+    local key=wallpaperRenderKey(sourceKey)
+    if wallpaperCache.commands and wallpaperCache.renderKey==key then return wallpaperCache.commands end
+    if wallpaperCache.path~=nil and wallpaperCache.path~=cfg.wallpaperPath then
+        clearWallpaperCache()
+    elseif wallpaperCache.data and (wallpaperCache.targetW~=Driver.w or wallpaperCache.targetH~=Driver.h-TASK) then
+        clearWallpaperCache()
+    elseif wallpaperCache.renderKey~=key and wallpaperCache.commands then
+        -- Rebuild only the command list when the performance quality tier
+        -- changes; retain decoded pixels to avoid repeating image decoding.
+        wallpaperCache.commands=nil
+        wallpaperCache.error=nil
+        wallpaperCache.failedKey=nil
+    end
+    if wallpaperCache.failedKey~=sourceKey and (not wallpaperJob or wallpaperJob.key~=sourceKey) then startWallpaperLoad(sourceKey) end
+    if cfg.wallpaperEnabled~=false and cfg.wallpaperPath~="" and cfg.wallpaperMode~="black" then
+        return solidWallpaperCommands("fallback:"..tostring(cfg.wallpaperPath)..":"..tostring(cfg.wallpaperError))
+    end
+    return nil
 end
 
 -- Pure Lua image decoders ---------------------------------------------------
--- CC:Tweaked does not expose a PNG/JPEG decoder.  The following decoder is
--- deliberately bounded and is driven by ImagePipeline coroutines below.
+-- CC:Tweaked does not expose a PNG/JPEG decoder. Work-heavy scan, resize, and
+-- quantization paths accept progress callbacks so services can yield safely.
 local pngDecode,jpegDecode,imagePrepare
 local qoiDecoder,qoiLoadAttempted
 local imageCacheSave,imageCacheLoad,imageCacheClear,imageCachePath
@@ -437,7 +644,7 @@ function pngDecode(body,yieldFn,targetW,targetH)
         end
         previous=row; if yieldFn then yieldFn(y/height) end
     end
-    return imageNormalize({width=outputW,height=outputH,pixels=pixels})
+    return imageNormalize({width=outputW,height=outputH,pixels=pixels},yieldFn)
 end
 local jpegZigzag={0,1,5,6,14,15,27,28,2,4,7,13,16,26,29,42,3,8,12,17,25,30,41,43,9,11,18,24,31,40,44,53,10,19,23,32,39,45,52,54,20,22,33,38,46,51,55,60,21,34,37,47,50,56,59,61,35,36,48,49,57,58,62,63}
 local function jpegHuffmanBuild(lengths,symbols)
@@ -652,7 +859,7 @@ function JPEG.decodeScan(state,yieldFn)
             if yieldFn then yieldFn((my*mcusX+mx+1)/(mcusX*mcusY)) end
         end
     end
-    return imageNormalize({width=state.width,height=state.height,pixels=pixels})
+    return imageNormalize({width=state.width,height=state.height,pixels=pixels},yieldFn)
 end
 function jpegDecode(body,yieldFn)
     if body:byte(1)~=255 or body:byte(2)~=216 then error("not a JPEG") end
@@ -691,7 +898,7 @@ local function imageResize(data,targetW,targetH,yieldFn)
         for x=1,w do local sx=clamp(floor((x-0.5)/scale+0.5),1,data.width); pixels[(y-1)*w+x]=imagePixel(data,sx,sy) end
         if yieldFn then yieldFn(y/h) end
     end
-    return imageNormalize({version=1,width=w,height=h,pixels=pixels})
+    return imageNormalize({version=1,width=w,height=h,pixels=pixels},yieldFn)
 end
 local function imageQuantize(data,maxColors,yieldFn)
     maxColors=clamp(floor(maxColors or 16),1,16); local buckets={}
@@ -700,7 +907,12 @@ local function imageQuantize(data,maxColors,yieldFn)
         if not q then q={count=0,r=0,g=0,b=0}; buckets[key]=q end; q.count=q.count+1; q.r=q.r+r; q.g=q.g+g; q.b=q.b+b
         if yieldFn and i%4096==0 then yieldFn(i/#data.pixels) end
     end
-    local bins={}; for _,q in pairs(buckets) do bins[#bins+1]=q end; table.sort(bins,function(a,b) return a.count>b.count end)
+    local bins={}; local seen=0
+    for _,q in pairs(buckets) do
+        bins[#bins+1]=q; seen=seen+1
+        if yieldFn and seen%2048==0 then yieldFn(seen/max(1,seen+1)) end
+    end
+    table.sort(bins,function(a,b) return a.count>b.count end)
     local palette={}; for i=1,min(maxColors,#bins) do local q=bins[i]; palette[i]=0xFF000000+floor(q.r/q.count+0.5)*65536+floor(q.g/q.count+0.5)*256+floor(q.b/q.count+0.5) end
     if #palette==0 then palette[1]=0xFF000000 end
     local rle={}; local last=nil; local count=0
@@ -711,7 +923,7 @@ local function imageQuantize(data,maxColors,yieldFn)
         if yieldFn and i%2048==0 then yieldFn(i/#data.pixels) end
     end
     if last then rle[#rle+1]={index=last-1,count=count} end
-    local stored={version=2,width=data.width,height=data.height,palette=palette,rle=rle}; local normalized=imageNormalize(stored); return normalized,stored
+    local stored={version=2,width=data.width,height=data.height,palette=palette,rle=rle}; local normalized=imageNormalize(stored,yieldFn); return normalized,stored
 end
 imageToStored=function(data)
     if data and data.version==2 and type(data.palette)=="table" and type(data.rle)=="table" then return {version=2,width=data.width,height=data.height,palette=data.palette,rle=data.rle} end
@@ -803,7 +1015,7 @@ local function loadQoiDecoder()
     return qoiDecoder
 end
 
-local function normalizeQoi(decoded)
+local function normalizeQoi(decoded,progress)
     if type(decoded)~="table" then return nil,"luaqoi returned no image table" end
     local width=tonumber(decoded.width); local height=tonumber(decoded.height)
     if not width or not height or width<1 or height<1 or width>1024 or height>768 or width*height>262144 then return nil,"QOI dimensions are unsafe" end
@@ -821,8 +1033,9 @@ local function normalizeQoi(decoded)
                 pixels[(y-1)*width+x]=0xFF000000+value%16777216
             end
         end
+        if progress then progress(y/height) end
     end
-    return imageNormalize({version=1,width=width,height=height,pixels=pixels})
+    return imageNormalize({version=1,width=width,height=height,pixels=pixels},progress)
 end
 
 local function imageDecodeQoi(body)
@@ -871,48 +1084,48 @@ local function imageDeleteNativePng(path)
 end
 local function imagePersistNativePng(path,key)
     if type(path)~="string" or path=="" or not fs.exists(path) or fs.isDir(path) then return nil,"invalid PNG source path" end
+    local service=E.context and E.context.fileService
+    if not service then return nil,"File service unavailable" end
     local ok,result=pcall(function()
         if not fs.exists(imageDir) then fs.makeDir(imageDir) end
         local destination=fs.combine(imageDir,"wallpaper_"..imageHash(tostring(key or path))..".png")
         if path~=destination then
-            if fs.exists(destination) then fs.delete(destination) end
-            fs.copy(path,destination)
+            local body,readError=service:readText(path,cfg.maxImageDownload)
+            if not body then error(readError or "native PNG source could not be read") end
+            local saved,saveError=service:writeAtomic(destination,body,cfg.maxImageDownload)
+            if not saved then error(saveError or "native PNG could not be stored") end
         end
         return destination
     end)
     if not ok then return nil,tostring(result) end
     return result
 end
-nativeWallpaperLoad=function(path,mode,targetW,targetH)
+wallpaperLoadPng=function(path,targetW,targetH,progress)
     local ok,body=pcall(readFile,path,cfg.maxImageDownload)
     if not ok then
         imageDiagnostic("ERROR","wallpaper.read",path..": "..diagnosticTrace(body))
         return nil,tostring(body)
     end
-    imageDiagnostic("INFO","wallpaper.native",path.." trying Tom's GPU PNG decoder")
-    local native,nativeError=imageDecodeNativePng(body)
-    if native and mode=="center" and native.width<=targetW and native.height<=targetH then return native end
-    if native then
-        imageDiagnostic("INFO","wallpaper.native", "native image released; fallback=pure_lua_png for resize/fit")
-        imageFreeNativePng(native)
+    imageDiagnostic("INFO","wallpaper.decode",path.." using cooperative PNG decode")
+    local decoded
+    if progress then decoded=pngDecode(body,progress,targetW,targetH)
     else
-        imageDiagnostic("WARN","wallpaper.native", "native decoder unavailable/failed; fallback=pure_lua_png: "..tostring(nativeError or "unknown error"))
+        local decodeOk,value=pcall(pngDecode,body,nil,targetW,targetH)
+        if not decodeOk then imageDiagnostic("ERROR","wallpaper.png_decode",diagnosticTrace(value)); return nil,tostring(value) end
+        decoded=value
     end
-    local decodeOk,decoded=pcall(pngDecode,body,nil,targetW,targetH)
-    if not decodeOk then
-        imageDiagnostic("ERROR","wallpaper.png_decode",diagnosticTrace(decoded))
-        return nil,tostring(decoded)
-    end
-    local prepareOk,data=pcall(imagePrepare,decoded,targetW,targetH)
-    if not prepareOk then
-        imageDiagnostic("ERROR","wallpaper.resize",diagnosticTrace(data))
-        return nil,tostring(data)
+    local data
+    if progress then data=imagePrepare(decoded,targetW,targetH,progress)
+    else
+        local prepareOk,value=pcall(imagePrepare,decoded,targetW,targetH)
+        if not prepareOk then imageDiagnostic("ERROR","wallpaper.resize",diagnosticTrace(value)); return nil,tostring(value) end
+        data=value
     end
     if not data then
         imageDiagnostic("ERROR","wallpaper.resize", "PNG wallpaper conversion returned no image")
         return nil,"PNG wallpaper conversion failed"
     end
-    imageDiagnostic("INFO","wallpaper.fallback", "pure Lua PNG decode/resize succeeded")
+    imageDiagnostic("INFO","wallpaper.decode", "cooperative PNG decode/resize succeeded")
     return data
 end
 
@@ -921,13 +1134,21 @@ imageLoadQoi=function(path,targetW,targetH,progress)
     if cfg.maxImageDownload and fs.getSize(path)>cfg.maxImageDownload then return nil,"QOI file exceeds configured size limit" end
     local decoder=loadQoiDecoder(); if not decoder then return nil,"luaqoi decoder unavailable" end
     imageDiagnostic("INFO","qoi.load","luaqoi qoid.decode({file=path}) path="..path)
-    local ok,decoded=pcall(decoder.decode,{file=path})
-    if not ok then imageDiagnostic("ERROR","qoi.load",path..": "..diagnosticTrace(decoded)); return nil,tostring(decoded) end
-    local data,err=normalizeQoi(decoded); if not data then imageDiagnostic("ERROR","qoi.normalize",path..": "..tostring(err)); return nil,err end
+    local decoded
+    if progress then decoded=decoder.decode({file=path},nil,progress)
+    else
+        local ok,value=pcall(decoder.decode,{file=path})
+        if not ok then imageDiagnostic("ERROR","qoi.load",path..": "..diagnosticTrace(value)); return nil,tostring(value) end
+        decoded=value
+    end
+    local data,err=normalizeQoi(decoded,progress); if not data then imageDiagnostic("ERROR","qoi.normalize",path..": "..tostring(err)); return nil,err end
     if targetW and targetH then
-        local preparedOk,prepared=pcall(imagePrepare,data,targetW,targetH,progress)
-        if not preparedOk then imageDiagnostic("ERROR","qoi.resize",diagnosticTrace(prepared)); return nil,tostring(prepared) end
-        data=prepared
+        if progress then data=imagePrepare(data,targetW,targetH,progress)
+        else
+            local preparedOk,prepared=pcall(imagePrepare,data,targetW,targetH)
+            if not preparedOk then imageDiagnostic("ERROR","qoi.resize",diagnosticTrace(prepared)); return nil,tostring(prepared) end
+            data=prepared
+        end
     end
     return data
 end
@@ -943,9 +1164,9 @@ function imagePrepare(data,targetW,targetH,progress)
     end
     return lastData,lastStored,lastSize
 end
-end
-E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.imageResize=imageResize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageDecodeQoi=imageDecodeQoi; E.imageLoadQoi=imageLoadQoi; E.qoiSignature=qoiSignature; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageHttpCacheLoad=imageHttpCacheLoad; E.imageHttpCacheSave=imageHttpCacheSave; E.imageHttpCacheClear=imageHttpCacheClear; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
+E.imageRead=imageRead; E.imageWrite=imageWrite; E.imageList=imageList; E.imagePixel=imagePixel; E.imageNormalize=imageNormalize; E.imageResize=imageResize; E.drawImage=drawImage; E.wallpaperCommands=wallpaperCommands; E.stepWallpaperLoad=stepWallpaperLoad; E.wallpaperLoading=function() return wallpaperJob~=nil and wallpaperJob.status=="loading" end; E.pngDecode=pngDecode; E.jpegDecode=jpegDecode; E.imagePrepare=imagePrepare; E.imageDecodeQoi=imageDecodeQoi; E.imageLoadQoi=imageLoadQoi; E.qoiSignature=qoiSignature; E.imageCacheSave=imageCacheSave; E.imageCacheLoad=imageCacheLoad; E.imageCacheClear=imageCacheClear; E.imageCachePath=imageCachePath; E.imageHttpCacheLoad=imageHttpCacheLoad; E.imageHttpCacheSave=imageHttpCacheSave; E.imageHttpCacheClear=imageHttpCacheClear; E.imageDecodeNativePng=imageDecodeNativePng; E.imageLoadNativePng=imageLoadNativePng; E.imageStageNativePng=imageStageNativePng; E.imageFreeNativePng=imageFreeNativePng; E.imageDeleteNativePng=imageDeleteNativePng; E.imagePersistNativePng=imagePersistNativePng
 E.imageDiagnostic=imageDiagnostic; E.imageDiagnosticsPath=imageDiagnosticPath
 E.resetWallpaperCache=clearWallpaperCache
 
+end
 end

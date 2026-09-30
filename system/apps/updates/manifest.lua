@@ -1,1 +1,1 @@
-return {id="updates",name="System Update",icon="updates",entry="app.lua",window={width=448,height=230},desktop={visible=true,order=210},service=true,requirements={}}
+return {id="updates",name="System Update",description="Check for updates, repair, and rollback",icon="updates",entry="app.lua",window={width=448,height=230},desktop={visible=true,order=210},service=true,requirements={}}

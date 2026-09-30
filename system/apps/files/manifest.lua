@@ -1,1 +1,1 @@
-return {id="files",name="Files",icon="files",entry="app.lua",window={width=398,height=254},desktop={visible=true,order=60},requirements={}}
+return {id="files",name="Files",description="Browse folders and open, save, or delete files",icon="files",entry="app.lua",window={width=398,height=254},desktop={visible=true,order=60},requirements={}}

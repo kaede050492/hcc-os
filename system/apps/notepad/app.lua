@@ -9,27 +9,33 @@ local function splitLines(s)
     return result
 end
 function Notepad:init(path)
-    self.path=path; self.lines={""}; self.row=1; self.col=0; self.top=1; self.left=0; self.unsaved=false
+    self.path=nil; self.lines={""}; self.row=1; self.col=0; self.top=1; self.left=0; self.unsaved=false
     if path then
-        local ok,data=pcall(readFile,path)
-        if not ok then error(data) end
+        local storage=self.context and self.context.storage
+        if not storage then error("File service unavailable") end
+        local canonical,pathError=storage:normalisePath(path)
+        if not canonical then error(pathError or "Invalid file path") end
+        self.path=canonical
+        local data,readError=storage:readText(canonical,65536)
+        if data==nil then error(readError or "Could not read file") end
         self.lines=splitLines(data)
         -- Byte editing of UTF-8 could corrupt multi-byte characters. Preserve such
         -- files exactly and expose them as read-only, rather than corrupting data.
-        self.readOnly=data:find("[^\009\010\013\032-\126]")~=nil or fs.isReadOnly(path)
+        local writable=storage:canWrite(path)
+        self.readOnly=data:find("[^\009\010\013\032-\126]")~=nil or not writable
         self.win.name=fs.getName(path)
     end
 end
 function Notepad:saveTo(path,confirmed)
-    path=fs.combine("/",path)
-    if path=="" or path=="/" or fs.isDir(path) then errorBox("Choose a file path"); return end
+    local storage=self.context and self.context.storage
+    if not storage then errorBox("File service unavailable"); return end
+    local allowed,canonical=storage:canWrite(path)
+    if not allowed then errorBox(canonical); return end
+    path=canonical
     if fs.exists(path) and path~=self.path and not confirmed then
         dialog("Overwrite file",path,{"Yes","No"},function(b) if b=="Yes" then self:saveTo(path,true) end end); return
     end
-    local ok,err=pcall(function()
-        local f,e=fs.open(path,"w"); if not f then error(e or "Cannot save") end
-        local good,reason=pcall(f.write,table.concat(self.lines,"\n")); f.close(); if not good then error(reason) end
-    end)
+    local ok,err=storage:writeTextAtomic(path,table.concat(self.lines,"\n"),65536)
     if not ok then errorBox(err); return end
     self.path=path; self.win.name=fs.getName(path); self.unsaved=false; mark(self.win); taskDirty(); notify("Saved "..path,P.success)
 end

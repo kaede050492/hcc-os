@@ -22,14 +22,19 @@ return function(E)
         OS.drag=nil; OS.held={}; OS.mouseButtons={}
         for _,w in ipairs(OS.windows) do
             if w.restore then w.restore=nil; local area=workspace(); w.x,w.y,w.w,w.h=area.x,area.y,area.w,area.h end
-            appCall(w,"resume"); w.nextUpdate=now(); mark(w)
+            if not w.minimized and not w.crash then
+                local resumedAt=now(); w.lastUpdate=resumedAt
+                appCall(w,"resume"); w.nextUpdate=resumedAt; mark(w)
+            end
         end
         allDirty(); notify(ok and "Peripherals rescanned" or "GPU unavailable; reconnect and press F5",ok and P.success or P.warning)
         if not ok then print("[HCC OS] GPU unavailable: "..(Driver.error or "not found")) end
     end
     local function setMenu(value)
+        local opening=value and not OS.menu
         OS.menu=value and true or false; OS.context=nil; OS.drag=nil
-        if OS.menu then OS.menuIndex=clamp(OS.menuIndex,1,#OS.order+1) end
+        if opening then OS.menuQuery=""; OS.menuIndex=1; OS.powerMenu=false end
+        if OS.menu then OS.menuIndex=clamp(OS.menuIndex,1,menuCount()) end
         overlayDirty()
     end
     local function desktopFocus()

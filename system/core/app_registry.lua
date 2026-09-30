@@ -97,13 +97,31 @@ function Registry:scan()
         local path=fs.combine(self.root,name)
         local dirOk,isDir=pcall(fs.isDir,path)
         local manifestOk,hasManifest=pcall(fs.exists,fs.combine(path,"manifest.lua"))
-        local appOk,hasApp=pcall(fs.exists,fs.combine(path,"app.lua"))
-        if dirOk and isDir and manifestOk and hasManifest and appOk and hasApp then
-            local manifest,err=readLuaTable(fs.combine(path,"manifest.lua"))
-            local entry,entryError=manifest and self:manifestEntry(name,manifest)
+        if dirOk and isDir and manifestOk and hasManifest then
+            local loaded,manifest,readError=pcall(readLuaTable,fs.combine(path,"manifest.lua"))
+            local entry,entryError
+            if loaded and manifest then
+                local valid,parsed,parseError=pcall(self.manifestEntry,self,name,manifest)
+                if valid then entry,entryError=parsed,parseError
+                else entryError=parsed end
+            elseif not loaded then
+                readError=manifest
+            end
             if not entry then
-                errors[#errors+1]=tostring(err or entryError or ("invalid package: "..name))
-            else entries[#entries+1]=entry end
+                errors[#errors+1]=tostring(readError or entryError or ("invalid package: "..name))
+            else
+                local entryExistsOk,entryExists=pcall(fs.exists,entry.entryPath)
+                local entryDirOk,entryIsDir=pcall(fs.isDir,entry.entryPath)
+                if not entryExistsOk or not entryDirOk then
+                    errors[#errors+1]="cannot inspect application entry: "..entry.entryPath
+                elseif not entryExists or entryIsDir then
+                    errors[#errors+1]="application entry is missing or not a file: "..entry.entryPath
+                else
+                    entries[#entries+1]=entry
+                end
+            end
+        elseif dirOk and isDir and not manifestOk then
+            errors[#errors+1]="cannot inspect application manifest: "..fs.combine(path,"manifest.lua")
         end
     end
     -- A partially upgraded installation can still boot from the old flat
@@ -146,6 +164,8 @@ function Registry:requirements(def,devices)
         keyboard={ok=devices.keyboardAvailable==true,label="Tom's keyboard"},
         peripheral={ok=#(devices.list or {})>0,label="peripheral"},
         detector={ok=devices.detector~=nil or devices.detectorAvailable==true,label="Player Detector"},
+        player_radar={ok=devices.detectorCapabilities and devices.detectorCapabilities.player_radar==true,
+            label="compatible Player Detector"},
         modem={ok=#(devices.modems or {})>0,label="modem"},
         inventory={ok=#(devices.inventories or {})>0,label="inventory peripheral"}
     }

@@ -65,11 +65,14 @@ end
 function Loader:load(name)
     local path, err = self:resolve(name)
     if not path then error(err, 0) end
-    return self:loadPath(path, _ENV, name)
+    return self:loadPath(path, _ENV, normaliseName(name))
 end
 
 function Loader:clear(name)
-    if name then self.cache[name] = nil; self.paths[name] = nil
+    if name then
+        local normalized=normaliseName(name)
+        if normalized then self.cache[normalized]=nil; self.paths[normalized]=nil end
+        self.cache[name]=nil; self.paths[name]=nil
     else self.cache = {}; self.paths = {} end
 end
 

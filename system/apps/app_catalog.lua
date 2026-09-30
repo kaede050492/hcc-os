@@ -4,7 +4,7 @@
 return {
     {id="clock", name="Clock", source="module"},
     {id="calendar", name="Calendar", source="module"},
-    {id="radar", name="Player Radar", requirements={"detector"}, source="module"},
+    {id="radar", name="Player Radar", requirements={"player_radar"}, source="module"},
     {id="server", name="Server Monitor", source="module"},
     {id="notepad", name="Notepad", source="module"},
     {id="files", name="Files", source="module"},

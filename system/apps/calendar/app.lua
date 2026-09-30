@@ -40,7 +40,37 @@ function Calendar:drawMonth(c,y,m)
         c:text(x+5,yy+3,tostring(day),P.textPrimary)
     end
 end
+function Calendar:drawCompactMonth(c,y,m)
+    local d=jst(); local cw=c.w/7
+    local rowHeight=max(1,min(16,floor((c.h-9)/6)))
+    local headerY=max(0,floor((c.h-(9+rowHeight*6))/2))
+    for i,s in ipairs({"SU","MO","TU","WE","TH","FR","SA"}) do
+        c:clipping((i-1)*cw,headerY,cw,9):text(max(0,floor((cw-Driver.measure(s))/2)),0,s,i==1 and P.error or P.textSecondary)
+    end
+    local first=weekday(y,m,1)
+    for day=1,monthDays(y,m) do
+        local ix=first+day-1; local x=(ix%7)*cw; local yy=headerY+9+floor(ix/7)*rowHeight
+        if day==d.day and m==d.month and y==d.year then
+            c:filledRectangle(x+1,yy+1,max(1,cw-2),max(1,rowHeight-1),P.panelBackground)
+            c:rectangle(x+1,yy+1,max(1,cw-2),max(1,rowHeight-1),P.accent)
+        end
+        c:clipping(x,yy,cw,rowHeight):text(max(0,floor((cw-Driver.measure(tostring(day)))/2)),0,tostring(day),P.textPrimary)
+    end
+end
 function Calendar:draw(c)
+    if self.slide and performance and type(performance.getQualityLevel)=="function" then
+        local qualityOk,level=pcall(performance.getQualityLevel,performance)
+        if qualityOk and finite(level) and level>0 then self.slide=nil end
+    end
+    if c.w<390 or c.h<160 then
+        button(self,c,6,3,28,"<",function() self:move(-1) end)
+        button(self,c,c.w-34,3,28,">",function() self:move(1) end)
+        c:clipping(40,7,max(1,c.w-80),10):text(0,0,string.format("%04d / %02d",self.year,self.month),P.accent)
+        local area=c:clipping(6,20,c.w-12,max(1,c.h-20))
+        self:drawCompactMonth(area,self.year,self.month)
+        self.slide=nil
+        return
+    end
     button(self,c,6,5,28,"<",function() self:move(-1) end)
     button(self,c,c.w-34,5,28,">",function() self:move(1) end)
     c:text(45,9,string.format("%04d / %02d",self.year,self.month),P.accent)

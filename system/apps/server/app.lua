@@ -76,6 +76,19 @@ function Server:draw(c)
     local th=row and row.history.tps or self.tpsHistory
     local mh=row and row.history.mspt or self.tickHistory
     local source=row and ("Manual: "..row.name) or "Estimated: CC timer delivery"
+    if c.h<160 then
+        c:clipping(7,3,c.w-14,10):text(0,0,source,P.accent)
+        c:clipping(7,16,c.w-14,10):text(0,0,tps and string.format("TPS: %.2f",tps) or "TPS: sampling...",tps and healthColor(tps,true) or P.textSecondary)
+        c:clipping(7,28,c.w-14,10):text(0,0,row and string.format("MSPT: %.2f ms",value) or "MSPT: Unavailable",row and healthColor(value,false) or P.warning)
+        c:clipping(7,40,c.w-14,10):text(0,0,row and ("Age: "..floor(now()-row.at).."s  LEFT/RIGHT: dimension") or
+            (value and string.format("Tick interval: %.2f ms (Estimated)",value) or "Waiting for timer sample"),P.textSecondary)
+        local w=c.w-14
+        c:filledRectangle(7,54,w,4,P.panelBackground); if tps then c:filledRectangle(7,54,w*clamp(tps/20,0,1),4,healthColor(tps,true)) end
+        c:filledRectangle(7,60,w,4,P.panelBackground); if value then c:filledRectangle(7,60,w*clamp(value/100,0,1),4,row and healthColor(value,false) or P.accent) end
+        button(self,c,7,c.h-19,81,"M: SOURCE",function() self:onKey(keys.m) end)
+        button(self,c,93,c.h-19,min(105,c.w-100),"P: PASTE DATA",function() self:import() end)
+        return
+    end
     c:text(7,6,source,P.accent)
     c:text(7,20,tps and string.format("TPS: %.2f",tps) or "TPS: sampling...",tps and healthColor(tps,true) or P.textSecondary,c.w>=250 and 2 or 1)
     c:text(7,43,row and string.format("MSPT: %.2f ms",value) or "MSPT: Unavailable",row and healthColor(value,false) or P.warning)

@@ -1,9 +1,16 @@
 return function(E)
  local env=setmetatable({},{__index=E})
  local _ENV=env
-local currencyPath="/.hccos/currency"
-local currencyBackupPath="/.hccos/currency.bak"
+local dataPaths=E.context and E.context.paths or {}
+local currencyPath=dataPaths.currency or "/.hccos/currency"
+local currencyBackupPath=dataPaths.currencyBackup or "/.hccos/currency.bak"
 local currencyCsvPath="/.hccos/currency.csv"
+local fileStorage=E.context and E.context.fileService
+local MAX_CURRENCY_BYTES=1048576
+local MAX_CURRENCY_ITEMS=5000
+local MAX_CURRENCY_COINS=128
+local MAX_CURRENCY_RECENT=12
+local MAX_SAFE_INTEGER=9007199254740991
 local CURRENCY_SCALE=1000000 -- fixed-point micro units, never Lua floats
 local currencyWarning
 local currencyData
@@ -13,14 +20,15 @@ local function currencyCopy(t)
     local r={}; for k,v in pairs(t) do r[k]=v end; return r
 end
 local function currencyRead(path)
-    local f,err=fs.open(path,"r"); if not f then error(err or "Cannot open currency data") end
-    local ok,data=pcall(f.readAll); f.close(); if not ok then error(data) end
+    if not fileStorage then error("Safe file storage is unavailable") end
+    local data,err=fileStorage:readText(path,MAX_CURRENCY_BYTES)
+    if not data then error(err or "Cannot read currency data") end
     local good,value=pcall(textutils.unserialize,data or "")
     if not good or type(value)~="table" then error("Currency data is invalid") end
-    return value
+    return value,data
 end
 local function currencyValidName(s)
-    return type(s)=="string" and #s>=1 and #s<=48 and not s:find("[\r\n]")
+    return type(s)=="string" and #s>=1 and #s<=48 and not s:find("[%z\001-\031\127]")
 end
 local function currencyFixed(text,allowFraction)
     if type(text)=="number" then text=tostring(text) end
@@ -47,8 +55,17 @@ local function currencyInteger(text)
     local n=tonumber(text); if not finite(n) or n<0 or n>900000000000 then return nil end
     return floor(n)
 end
+local function currencyMultiply(left,right)
+    if type(left)~="number" or type(right)~="number" or left~=left or right~=right then return nil end
+    local a,b=math.abs(left),math.abs(right)
+    if a==math.huge or b==math.huge then return nil end
+    if a>0 and b>MAX_SAFE_INTEGER/a then return nil end
+    local product=left*right
+    if product~=floor(product) then return nil end
+    return product
+end
 local function currencyFormat(value,allowDecimals)
-    if type(value)~="number" or value~=value then return "-" end
+    if type(value)~="number" or value~=value or math.abs(value)>MAX_SAFE_INTEGER then return "-" end
     local negative=value<0
     value=floor(math.abs(value)+0.5)
     local whole=floor(value/CURRENCY_SCALE); local rem=value% CURRENCY_SCALE
@@ -77,65 +94,98 @@ local function currencySanitize(raw)
     local data=currencyCopy(currencyDefaults)
     data.coins={}; data.items={}; data.recent={}
     if type(raw)~="table" then return data end
-    data.baseCoin=currencyValidName(raw.baseCoin) and raw.baseCoin or ""
+    data.baseCoin=currencyValidName(raw.baseCoin) and ascii(raw.baseCoin) or ""
     data.allowDecimals=raw.allowDecimals==true
     data.rounding=({floor=true,round=true,ceil=true,exact=true})[raw.rounding] and raw.rounding or "floor"
+    if (type(raw.coins)=="table" and #raw.coins>MAX_CURRENCY_COINS) or
+        (type(raw.items)=="table" and #raw.items>MAX_CURRENCY_ITEMS) then
+        currencyWarning="Currency data was trimmed to its supported size limits"
+    end
+    local seenCoins={}
     if type(raw.coins)=="table" then
         for _,coin in ipairs(raw.coins) do
+            if #data.coins>=MAX_CURRENCY_COINS then break end
             if type(coin)=="table" and currencyValidName(coin.name) then
+                local name=ascii(coin.name); local key=name:lower()
                 local unit=tostring(coin.unit or coin.value or "")
-                if currencyFixed(unit,data.allowDecimals) and currencyFixed(unit,data.allowDecimals)>0 then
-                    data.coins[#data.coins+1]={name=ascii(coin.name),unit=unit}
+                if currencyValidName(name) and not seenCoins[key] and currencyFixed(unit,data.allowDecimals) and currencyFixed(unit,data.allowDecimals)>0 then
+                    seenCoins[key]=true
+                    data.coins[#data.coins+1]={name=name,unit=unit}
                 end
             end
         end
     end
+    if data.baseCoin~="" then
+        local matched
+        for _,coin in ipairs(data.coins) do
+            if coin.name:lower()==data.baseCoin:lower() then matched=coin.name; break end
+        end
+        data.baseCoin=matched or ""
+    end
+    local seenItems={}
     if type(raw.items)=="table" then
         for _,item in ipairs(raw.items) do
+            if #data.items>=MAX_CURRENCY_ITEMS then break end
             if type(item)=="table" and currencyValidName(item.id) then
+                local id=ascii(item.id)
                 local stack=currencyInteger(tostring(item.stack or 64)) or 64
                 local buy=tostring(item.buy or ""); local sell=tostring(item.sell or "")
+                local name=tostring(item.name or item.id)
+                if not currencyValidName(name) then name=item.id end
+                name=ascii(name)
                 if (buy=="" or currencyFixed(buy,data.allowDecimals)) and
-                    (sell=="" or currencyFixed(sell,data.allowDecimals)) and stack>=1 and stack<=999999 then
-                    data.items[#data.items+1]={id=ascii(item.id),name=ascii(item.name or item.id),buy=buy,sell=sell,
+                    (sell=="" or currencyFixed(sell,data.allowDecimals)) and stack>=1 and stack<=999999 and
+                    currencyValidName(id) and currencyValidName(name) and not seenItems[id] then
+                    seenItems[id]=true
+                    data.items[#data.items+1]={id=id,name=name,buy=buy,sell=sell,
                         stack=stack,favorite=item.favorite==true}
                 end
             end
         end
     end
     if type(raw.recent)=="table" then
-        for _,id in ipairs(raw.recent) do if currencyValidName(id) then data.recent[#data.recent+1]=id end end
+        for _,id in ipairs(raw.recent) do
+            if #data.recent>=MAX_CURRENCY_RECENT then break end
+            if currencyValidName(id) then data.recent[#data.recent+1]=ascii(id) end
+        end
     end
     return data
 end
 local function currencyLoad()
     local data
-    if fs.exists(currencyPath) then
+    local primaryOk,primaryExists=pcall(fs.exists,currencyPath)
+    local backupOk,backupExists=pcall(fs.exists,currencyBackupPath)
+    if not primaryOk or not backupOk then currencyWarning="Currency storage could not be checked" end
+    if primaryOk and primaryExists then
         local ok,value=pcall(currencyRead,currencyPath); if ok then data=value end
     end
-    if not data and fs.exists(currencyBackupPath) then
+    if not data and backupOk and backupExists then
         local ok,value=pcall(currencyRead,currencyBackupPath); if ok then data=value; currencyWarning="Currency data restored from backup" end
     end
     if not data then
         data=currencyCopy(currencyDefaults)
-        if fs.exists(currencyPath) then currencyWarning="Currency data invalid; using empty dictionary" end
+        if (primaryOk and primaryExists) or (backupOk and backupExists) then
+            currencyWarning="Currency data and backup are invalid; using an empty dictionary"
+        end
     end
     return currencySanitize(data)
 end
 currencyData=currencyLoad()
+E.currencyWarning=currencyWarning
 local function currencySave()
     local ok,err=pcall(function()
+        if not fileStorage then error("Safe file storage is unavailable") end
         if not fs.exists("/.hccos") then fs.makeDir("/.hccos") end
         if fs.exists(currencyPath) then
-            local oldOk,old=pcall(currencyRead,currencyPath)
+            local oldOk,old,oldRaw=pcall(currencyRead,currencyPath)
             if oldOk then
-                local f,e=fs.open(currencyBackupPath,"w")
-                if not f then error(e or "Cannot write currency backup") end
-                local good,reason=pcall(f.write,textutils.serialize(old)); f.close(); if not good then error(reason) end
+                local backedUp,backupError=fileStorage:writeManagedAtomic(currencyBackupPath,oldRaw or textutils.serialize(old),MAX_CURRENCY_BYTES)
+                if not backedUp then error(backupError or "Cannot write currency backup") end
             end
         end
-        local f,e=fs.open(currencyPath,"w"); if not f then error(e or "Cannot save currency data") end
-        local good,reason=pcall(f.write,textutils.serialize(currencyData)); f.close(); if not good then error(reason) end
+        local serialized=textutils.serialize(currencyData)
+        local saved,saveError=fileStorage:writeManagedAtomic(currencyPath,serialized,MAX_CURRENCY_BYTES)
+        if not saved then error(saveError or "Cannot save currency data") end
     end)
     return ok,err
 end
@@ -172,9 +222,35 @@ local function currencyFindCoin(name)
     for _,coin in ipairs(currencyData.coins) do if coin.name:lower()==tostring(name or ""):lower() then return coin end end
 end
 local function currencyCsvSplit(line)
-    local parts={}; for field in (line..","):gmatch("(.-),") do parts[#parts+1]=field end; return parts
+    local parts={}; local index,length=1,#line
+    while index<=length do
+        local value
+        if line:sub(index,index)=='"' then
+            index=index+1; local chars={}; local closed=false
+            while index<=length do
+                local char=line:sub(index,index)
+                if char=='"' then
+                    if line:sub(index+1,index+1)=='"' then chars[#chars+1]='"'; index=index+2
+                    else index=index+1; closed=true; break end
+                else chars[#chars+1]=char; index=index+1 end
+            end
+            if not closed or (index<=length and line:sub(index,index)~=',') then return nil,"Invalid CSV quoting" end
+            value=table.concat(chars)
+        else
+            local comma=line:find(",",index,true)
+            if comma then value=line:sub(index,comma-1); index=comma
+            else value=line:sub(index); index=length+1 end
+        end
+        parts[#parts+1]=value
+        if index<=length and line:sub(index,index)==',' then index=index+1; if index>length then parts[#parts+1]="" end end
+    end
+    if length==0 then return {""} end
+    return parts
+end
+local function currencyCsvField(value)
+    return '"'..tostring(value or ""):gsub('"','""')..'"'
 end
 E.currencyData=currencyData; E.currencyPath=currencyPath; E.currencyBackupPath=currencyBackupPath; E.currencyCsvPath=currencyCsvPath
-E.currencySave=currencySave; E.currencyFixed=currencyFixed; E.currencyInteger=currencyInteger; E.currencyFormat=currencyFormat; E.currencyRatio=currencyRatio; E.currencyCoinValue=currencyCoinValue; E.currencyItemValue=currencyItemValue; E.currencyCoinsByValue=currencyCoinsByValue; E.currencyBreakdown=currencyBreakdown; E.currencyBreakdownText=currencyBreakdownText; E.currencyItemById=currencyItemById; E.currencyFindCoin=currencyFindCoin; E.currencyCsvSplit=currencyCsvSplit
+E.currencySave=currencySave; E.currencyFixed=currencyFixed; E.currencyInteger=currencyInteger; E.currencyMultiply=currencyMultiply; E.currencyFormat=currencyFormat; E.currencyRatio=currencyRatio; E.currencyCoinValue=currencyCoinValue; E.currencyItemValue=currencyItemValue; E.currencyCoinsByValue=currencyCoinsByValue; E.currencyBreakdown=currencyBreakdown; E.currencyBreakdownText=currencyBreakdownText; E.currencyItemById=currencyItemById; E.currencyFindCoin=currencyFindCoin; E.currencyCsvSplit=currencyCsvSplit; E.currencyCsvField=currencyCsvField; E.currencyMaxItems=MAX_CURRENCY_ITEMS; E.currencyMaxCoins=MAX_CURRENCY_COINS
 
 end

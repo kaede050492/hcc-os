@@ -28,6 +28,34 @@ function Geometry.contains(rect, x, y)
     return rect and x >= rect.x and y >= rect.y and x < Geometry.right(rect) and y < Geometry.bottom(rect)
 end
 
+function Geometry.roundedRectRow(rect, radius, y)
+    if not rect or rect.w < 1 or rect.h < 1 or y < rect.y or y >= Geometry.bottom(rect) then return nil end
+    radius = math.max(0, math.min(floor(number(radius, 0)), floor(math.min(rect.w, rect.h) / 2)))
+    if radius == 0 then return rect.x, Geometry.right(rect) end
+    local row = y - rect.y
+    local verticalDistance = 0
+    if row < radius then verticalDistance = radius - (row + 0.5)
+    elseif row >= rect.h - radius then verticalDistance = (row + 0.5) - (rect.h - radius) end
+    local halfWidth = math.sqrt(math.max(0, radius * radius - verticalDistance * verticalDistance))
+    local inset = math.max(0, math.min(floor(rect.w / 2), math.ceil(radius - halfWidth - 0.5)))
+    return rect.x + inset, Geometry.right(rect) - inset
+end
+
+function Geometry.roundedContains(rect, radius, x, y)
+    if not Geometry.contains(rect, x, y) then return false end
+    local left, right = Geometry.roundedRectRow(rect, radius, y)
+    return left ~= nil and x >= left and x < right
+end
+
+function Geometry.roundedContainsRect(rect, radius, area)
+    if not rect or not area or area.w < 1 or area.h < 1 then return false end
+    local right, bottom = Geometry.right(area) - 1, Geometry.bottom(area) - 1
+    return Geometry.roundedContains(rect, radius, area.x, area.y) and
+        Geometry.roundedContains(rect, radius, right, area.y) and
+        Geometry.roundedContains(rect, radius, area.x, bottom) and
+        Geometry.roundedContains(rect, radius, right, bottom)
+end
+
 function Geometry.intersect(a, b)
     if not a or not b then return nil end
     local x, y = max(a.x, b.x), max(a.y, b.y)

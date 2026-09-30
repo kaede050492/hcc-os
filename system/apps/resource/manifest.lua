@@ -1,1 +1,1 @@
-return {id="resource",name="Resource Monitor",icon="resource",entry="app.lua",window={width=500,height=250},desktop={visible=true,order=130},requirements={"inventory"}}
+return {id="resource",name="Resource Monitor",description="Track resources in connected inventories",icon="resource",entry="app.lua",window={width=500,height=250},desktop={visible=true,order=130},requirements={"inventory"}}

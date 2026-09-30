@@ -20,6 +20,17 @@ function PeripheralManager:onMouse(kind,x,y,b)
     elseif kind=="click" and y>=32 and y<self.win.h-26 and x<self.win.w*0.52 then self.selected=clamp(1+floor((y-32)/17),1,max(1,#devices.list)); self:refresh() end
 end
 function PeripheralManager:draw(c)
+    if c.w<360 or c.h<145 then
+        local item=devices.list[self.selected]
+        c:text(6,5,"PERIPHERAL MANAGER",P.accent)
+        c:clipping(6,19,c.w-12,10):text(0,0,item and shortText(item.name.." / "..item.kind,max(1,floor((c.w-12)/8))) or "No peripherals detected",P.textPrimary)
+        c:clipping(6,33,c.w-12,10):text(0,0,"METHODS: "..#self.methods,P.accent)
+        local rows=max(0,floor((c.h-68)/12))
+        for i=1,min(rows,#self.methods) do c:clipping(8,45+(i-1)*12,c.w-16,10):text(0,0,self.methods[i],P.textSecondary) end
+        button(self,c,5,c.h-23,75,"F5 RESCAN",function() rescan(); self:refresh() end)
+        c:clipping(85,c.h-20,c.w-91,10):text(0,0,"UP/DOWN SELECT",P.textSecondary)
+        return
+    end
     c:text(6,5,"PERIPHERAL MANAGER",P.accent); c:text(6,19,"F5 rescan  arrows select",P.textSecondary)
     local left=floor(c.w*0.52); c:line(left,31,left,c.h-27,P.border)
     for i,item in ipairs(devices.list) do

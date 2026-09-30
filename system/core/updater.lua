@@ -1,6 +1,20 @@
 local Updater = {}
 Updater.__index = Updater
 
+local function requestAsync(self,url)
+    if type(self.requestHttp)=="function" then
+        local ok,accepted,reason=pcall(self.requestHttp,url)
+        if not ok then return false,tostring(accepted) end
+        if accepted==false or accepted==nil then return false,tostring(reason or "HTTP request failed or was denied") end
+        return true
+    end
+    if type(http)~="table" or type(http.request)~="function" then return false,"HTTP request API unavailable" end
+    local ok,accepted,reason=pcall(http.request,url)
+    if not ok then return false,tostring(accepted) end
+    if accepted==false or accepted==nil then return false,tostring(reason or "HTTP request failed or was denied") end
+    return true
+end
+
 local function safeRelative(path)
     if type(path) ~= "string" or path == "" or #path > 160 then return false end
     if path:find("[%z\\]") or path:sub(1, 1) == "/" or path:match("^[A-Za-z]:") then return false end
@@ -274,6 +288,10 @@ function Updater:cleanup()
     -- An HTTP check cannot be forcibly aborted in CraftOS, but clearing the
     -- job makes its eventual response harmless instead of reviving cancelled
     -- update state after the user has moved on.
+    if type(self.cancelHttpRequest)=="function" then
+        if self.checkJob then pcall(self.cancelHttpRequest,self.checkJob.url) end
+        if self.downloadJob then pcall(self.cancelHttpRequest,self.downloadJob.url) end
+    end
     self.checkJob = nil
     self.downloadJob = nil
     local restored,restoreError=true,nil
@@ -318,13 +336,14 @@ function Updater:beginAsyncCheck()
     if self.state.phase == "downloading" or self.state.phase == "ready" then
         return false, "Finish or cancel the current update first"
     end
-    if type(http) ~= "table" or type(http.request) ~= "function" then
-        return false, "HTTP request API unavailable"
-    end
     local url = self.remote.manifestUrl(self.config.data)
-    local ok, accepted = pcall(http.request, url)
-    if not ok or accepted == false or accepted == nil then return false, "HTTP request failed or denied" end
+    if type(self.httpAvailable)=="function" and not self.httpAvailable(url) then
+        return false,"An application request for this URL is already active"
+    end
+    local requested,requestError=requestAsync(self,url)
+    if not requested then return false,requestError end
     self.checkJob = {url=url}
+    self.lastCheck=nil
     self.state = {phase="check_wait", current="manifest.lua", completed=0, total=0, message="Checking manifest in background..."}
     return true
 end
@@ -682,14 +701,14 @@ function Updater:step()
         return true
     end
     self.state.current = file.path
-    if type(http) ~= "table" or type(http.request) ~= "function" then
-        self:cleanup(); self.state.phase, self.state.message = "failed", "HTTP request API unavailable"
-        return false, self.state.message
-    end
     local url = self.remote.fileUrl(file.path, self.config.data)
-    local requested, accepted = pcall(http.request, url)
-    if not requested or accepted == false or accepted == nil then
-        self:cleanup(); self.state.phase, self.state.message = "failed", "Download request was denied"
+    if type(self.httpAvailable)=="function" and not self.httpAvailable(url) then
+        self:cleanup(); self.state.phase,self.state.message="failed","Another request for this URL is already active"
+        return false,self.state.message
+    end
+    local requested,requestError=requestAsync(self,url)
+    if not requested then
+        self:cleanup(); self.state.phase, self.state.message = "failed", tostring(requestError or "Download request was denied")
         return false, self.state.message
     end
     self.downloadJob = {url=url, file=file}
